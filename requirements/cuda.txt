@@ -9,17 +9,19 @@ torchaudio==2.11.0; sys_platform != "win32"
 torch==2.11.0+cu130; sys_platform == "win32"
 torchaudio==2.11.0+cu130; sys_platform == "win32"
 # These must be updated alongside torch
-torchvision==0.26.0 # Required for phi3v processor. See https://github.com/pytorch/vision?tab=readme-ov-file#installation for corresponding version
+torchvision==0.26.0; sys_platform != "win32" # Required for phi3v processor. See https://github.com/pytorch/vision?tab=readme-ov-file#installation for corresponding version
+torchvision==0.26.0+cu130; sys_platform == "win32" # Required for phi3v processor. See https://github.com/pytorch/vision?tab=readme-ov-file#installation for corresponding version
 torchcodec >= 0.14
-PyNvVideoCodec==2.0.4
+PyNvVideoCodec==2.1.0
 # FlashInfer should be updated together with the Dockerfile
 flashinfer-python==0.6.13; sys_platform != "win32"
 flashinfer-cubin==0.6.13; sys_platform != "win32"
 flashinfer-python @ https://github.com/SystemPanic/flashinfer-windows/releases/download/v0.6.11.post3/flashinfer_python-0.6.11.post3-py3-none-any.whl ; sys_platform == "win32"
 flashinfer-cubin==0.6.11.post3; sys_platform == "win32"
 apache-tvm-ffi==0.1.9
-tilelang==0.1.9
-nvidia-cudnn-frontend>=1.19.1
+tilelang==0.1.9; sys_platform != "win32"
+nvidia-cudnn-frontend>=1.19.1; sys_platform != "win32"
+nvidia-cudnn-frontend>=1.13.0,<1.19.0; sys_platform == "win32"
 # Required for LLM_NVTX_SCOPES_FOR_PROFILING=1
 nvtx==0.2.15
 # Required for faster safetensors model loading
@@ -33,4 +35,5 @@ quack-kernels>=0.3.3; sys_platform != "win32"
 tokenspeed-mla==0.1.2; platform_system == "Linux"
 
 # Humming kernels for quantization gemm
-humming-kernels[cu13]==0.1.10
+humming-kernels[cu13]==0.1.10; sys_platform != "win32"
+humming-kernels[cu13] @ git+https://github.com/SystemPanic/humming-windows.git@v0.1.10 ; sys_platform == "win32"

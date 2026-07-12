@@ -30,11 +30,11 @@ else()
   # Keep in sync with tools/install_deepgemm.sh
   if(WIN32)
     set(_DEEPGEMM_UPSTREAM_REPO "https://github.com/SystemPanic/DeepGEMM-windows.git")
-    set(_DEEPGEMM_UPSTREAM_TAG "94cccd27cf46ea938ac2733fc4426557f601a65a")
+    set(_DEEPGEMM_UPSTREAM_TAG "6714f340520959297d9248f181c027f6cfea5a44")
   else()
     set(_DEEPGEMM_UPSTREAM_REPO "https://github.com/deepseek-ai/DeepGEMM.git")
 	# NOTE: This is currently targeting nv-dev branch due to sm120 support
-    set(_DEEPGEMM_UPSTREAM_TAG "891d57b4db1071624b5c8fa0d1e51cb317fa709f")
+    set(_DEEPGEMM_UPSTREAM_TAG "a6b593d2826719dcf4892609af7b84ee23aaf32a")
   endif()
 
   set(_deepgemm_fc_root "${FETCHCONTENT_BASE_DIR}")
