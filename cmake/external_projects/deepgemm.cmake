@@ -137,7 +137,7 @@ if(DEEPGEMM_ARCHS)
   foreach(_pybin IN LISTS _dg_pythons)
     execute_process(
       COMMAND "${_pybin}" -c
-        "import sysconfig; print(sysconfig.get_config_var('SOABI'))"
+        "import sysconfig; s = sysconfig.get_config_var('SOABI'); s = s if s and s != 'None' else sysconfig.get_config_var('EXT_SUFFIX').lstrip('.').rsplit('.',1)[0]; print(s)"
       OUTPUT_VARIABLE _dg_soabi
       OUTPUT_STRIP_TRAILING_WHITESPACE
       COMMAND_ERROR_IS_FATAL ANY)
@@ -163,7 +163,9 @@ if(DEEPGEMM_ARCHS)
     install(DIRECTORY "${_dg_dir}/"
       DESTINATION vllm/third_party/deep_gemm
       COMPONENT _deep_gemm_C
-      FILES_MATCHING PATTERN "_C.cpython-*.so")
+      FILES_MATCHING
+        PATTERN "_C.cpython-*.so"
+        PATTERN "_C*.pyd")
   endforeach()
   add_custom_target(_deep_gemm_C ALL DEPENDS ${_dg_markers})
 

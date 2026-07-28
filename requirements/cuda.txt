@@ -9,7 +9,8 @@ torchaudio==2.11.0; sys_platform != "win32"
 torch==2.11.0+cu130; sys_platform == "win32"
 torchaudio==2.11.0+cu130; sys_platform == "win32"
 # These must be updated alongside torch
-torchvision==0.28.0 # Required for phi3v processor. See https://github.com/pytorch/vision?tab=readme-ov-file#installation for corresponding version
+torchvision==0.26.0; sys_platform != "win32" # Required for phi3v processor. See https://github.com/pytorch/vision?tab=readme-ov-file#installation for corresponding version
+torchvision==0.26.0+cu130; sys_platform == "win32" # Required for phi3v processor. See https://github.com/pytorch/vision?tab=readme-ov-file#installation for corresponding version
 torchcodec >= 0.14
 PyNvVideoCodec==2.0.4
 # FlashInfer should be updated together with the Dockerfile
@@ -23,7 +24,8 @@ flashinfer-cubin==0.6.11.post3; sys_platform == "win32"
 apache-tvm-ffi==0.1.10
 tilelang==0.1.9; sys_platform != "win32"
 tilelang==0.1.10; sys_platform == "win32"
-nvidia-cudnn-frontend>=1.19.1
+nvidia-cudnn-frontend>=1.19.1; sys_platform != "win32"
+nvidia-cudnn-frontend>=1.13.0,<1.19.0; sys_platform == "win32"
 # Required for LLM_NVTX_SCOPES_FOR_PROFILING=1
 nvtx==0.2.15
 # Required for faster safetensors model loading
