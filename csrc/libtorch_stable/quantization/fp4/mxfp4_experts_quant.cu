@@ -329,8 +329,8 @@ void mxfp4_quant_impl(void* output, void* output_scale, void* input,
 
 constexpr auto HALF = torch::headeronly::ScalarType::Half;
 constexpr auto BF16 = torch::headeronly::ScalarType::BFloat16;
-constexpr auto INT = torch::headeronly::ScalarType::Int;
-constexpr auto UINT8 = torch::headeronly::ScalarType::Byte;
+constexpr auto INT_TYPE = torch::headeronly::ScalarType::Int;
+constexpr auto UINT8_TYPE = torch::headeronly::ScalarType::Byte;
 
 static constexpr int MXFP4_BLOCK_SIZE = 32;
 
@@ -354,12 +354,12 @@ static void validate_mxfp4_experts_quant_inputs(
   STD_TORCH_CHECK(output_scale_offset_by_experts.dim() == 1);
 
   STD_TORCH_CHECK(input.scalar_type() == HALF || input.scalar_type() == BF16);
-  STD_TORCH_CHECK(input_offset_by_experts.scalar_type() == INT);
-  STD_TORCH_CHECK(output_scale_offset_by_experts.scalar_type() == INT);
+  STD_TORCH_CHECK(input_offset_by_experts.scalar_type() == INT_TYPE);
+  STD_TORCH_CHECK(output_scale_offset_by_experts.scalar_type() == INT_TYPE);
   // output is uint8 (two mxfp4 values packed into one uint8)
   // output_scale is int32 (four E8M0 values packed into one int32)
-  STD_TORCH_CHECK(output.scalar_type() == UINT8);
-  STD_TORCH_CHECK(output_scale.scalar_type() == INT);
+  STD_TORCH_CHECK(output.scalar_type() == UINT8_TYPE);
+  STD_TORCH_CHECK(output_scale.scalar_type() == INT_TYPE);
 
   STD_TORCH_CHECK(k % MXFP4_BLOCK_SIZE == 0, "k must be a multiple of 32");
   STD_TORCH_CHECK(input_offset_by_experts.size(0) == n_experts + 1);

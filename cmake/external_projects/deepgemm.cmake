@@ -160,7 +160,9 @@ if(DEEPGEMM_ARCHS)
     install(DIRECTORY "${_dg_dir}/"
       DESTINATION vllm/third_party/deep_gemm
       COMPONENT _deep_gemm_C
-      FILES_MATCHING PATTERN "_C.cpython-*.so")
+      FILES_MATCHING
+      PATTERN "_C.cpython-*.so"
+      PATTERN "_C.cp*-win_*.pyd")
   endforeach()
   add_custom_target(_deep_gemm_C ALL DEPENDS ${_dg_markers})
 
