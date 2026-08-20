@@ -1,0 +1,172 @@
+diff --git a/csrc/jit/compiler.hpp b/csrc/jit/compiler.hpp
+index 7be5eba..629a534 100644
+--- a/csrc/jit/compiler.hpp
++++ b/csrc/jit/compiler.hpp
+@@ -40,0 +41,3 @@ public:
++#ifdef _WIN32
++        Compiler::cuobjdump_path = Compiler::cuda_home / "bin" / "cuobjdump.exe";
++#else
+@@ -41,0 +45 @@ public:
++#endif
+@@ -66 +70,4 @@ public:
+-        if (get_env("DG_JIT_WITH_LINEINFO", 0))
++        if (get_env("DG_JIT_WITH_LINEINFO", 0)) {
++#ifdef _WIN32
++            flags += " -lineinfo";
++#else
+@@ -67,0 +75,2 @@ public:
++#endif
++        }
+@@ -167,0 +177,4 @@ public:
++#ifdef _WIN32
++        const auto command = fmt::format("\"{}\" --dump-sass \"{}\" > \"{}\"",
++            cuobjdump_path.string(), cubin_path.string(), sass_path.string());
++#else
+@@ -168,0 +182 @@ public:
++#endif
+@@ -192,0 +207,3 @@ class NVCCCompiler final: public Compiler {
++#ifdef _WIN32
++        const auto command = fmt::format("\"{}\" --version", nvcc_path.string());
++#else
+@@ -193,0 +211 @@ class NVCCCompiler final: public Compiler {
++#endif
+@@ -210,0 +229,3 @@ public:
++#ifdef _WIN32
++        nvcc_path = cuda_home / "bin" / "nvcc.exe";
++#else
+@@ -211,0 +233 @@ public:
++#endif
+@@ -225,0 +248,9 @@ public:
++#ifdef _WIN32
++        flags = fmt::format("{} -I\"{}\" {} "
++                            "-Xcompiler=/O2 -Xcompiler=/EHsc "
++                            "-Xcompiler=/Zc:__cplusplus "
++                            "-Xcompiler=/Zc:preprocessor "
++                            "-Xcompiler=/permissive- "
++                            "-O3 --expt-relaxed-constexpr --expt-extended-lambda",
++                            flags, library_include_path.string(), arch_flag);
++#else
+@@ -229,0 +261 @@ public:
++#endif
+@@ -241,0 +274,4 @@ public:
++#ifdef _WIN32
++        const auto command = fmt::format("cd /D \"{}\" && \"{}\" \"{}\" -cubin -o \"{}\" {}",
++            compile_dir.string(), nvcc_path.string(), code_path.string(), cubin_path.string(), flags);
++#else
+@@ -243,0 +280 @@ public:
++#endif
+@@ -253,0 +291,4 @@ public:
++#ifdef _WIN32
++            const auto ptx_command = fmt::format("cd /D \"{}\" && \"{}\" \"{}\" -ptx -o \"{}\" {}",
++                compile_dir.string(), nvcc_path.string(), code_path.string(), ptx_path->string(), flags);
++#else
+@@ -255,0 +297 @@ public:
++#endif
+diff --git a/deep_gemm/include/deep_gemm/common/exception.cuh b/deep_gemm/include/deep_gemm/common/exception.cuh
+index 7f0e29c..b7b7360 100644
+--- a/deep_gemm/include/deep_gemm/common/exception.cuh
++++ b/deep_gemm/include/deep_gemm/common/exception.cuh
+@@ -19 +19,3 @@ CUTLASS_HOST_DEVICE void host_device_printf(const char* format, ...) {
+-#ifdef _MSC_VER
++#if defined(__CUDA_ARCH__) || defined(__CUDACC_RTC__)
++#define DG_TRAP() __trap()
++#elif defined(_MSC_VER)
+diff --git a/deep_gemm/include/deep_gemm/common/sm120_utils.cuh b/deep_gemm/include/deep_gemm/common/sm120_utils.cuh
+index a9cedc8..dab2412 100644
+--- a/deep_gemm/include/deep_gemm/common/sm120_utils.cuh
++++ b/deep_gemm/include/deep_gemm/common/sm120_utils.cuh
+@@ -25 +25,2 @@ template <int swizzle_bytes>
+-using CuTeSwizzle = cute::Swizzle<__builtin_ctz(swizzle_bytes) - 4, 4, 3>;
++using CuTeSwizzle = cute::Swizzle<
++    cute::countr_zero(static_cast<uint32_t>(swizzle_bytes)) - 4, 4, 3>;
+diff --git a/deep_gemm/include/deep_gemm/impls/sm120_bf16_gemm.cuh b/deep_gemm/include/deep_gemm/impls/sm120_bf16_gemm.cuh
+index 31164bf..4fbb91b 100644
+--- a/deep_gemm/include/deep_gemm/impls/sm120_bf16_gemm.cuh
++++ b/deep_gemm/include/deep_gemm/impls/sm120_bf16_gemm.cuh
+@@ -95 +95 @@ sm120_bf16_gemm_impl(cd_dtype_t* gmem_d, const cd_dtype_t* gmem_c,
+-    static constexpr uint32_t kSwizzleCDShift = kSwizzleCDMode > 0 ? (7 - __builtin_ctz(kSwizzleCDMode)) : 0;
++    static constexpr uint32_t kSwizzleCDShift = kSwizzleCDMode > 0 ? (7 - cute::countr_zero(kSwizzleCDMode)) : 0;
+diff --git a/deep_gemm/include/deep_gemm/impls/sm120_fp8_fp4_gemm_1d1d.cuh b/deep_gemm/include/deep_gemm/impls/sm120_fp8_fp4_gemm_1d1d.cuh
+index 35077e3..5761698 100644
+--- a/deep_gemm/include/deep_gemm/impls/sm120_fp8_fp4_gemm_1d1d.cuh
++++ b/deep_gemm/include/deep_gemm/impls/sm120_fp8_fp4_gemm_1d1d.cuh
+@@ -109 +109 @@ sm120_fp8_fp4_gemm_1d1d_impl(cd_dtype_t* gmem_d, const cd_dtype_t* gmem_c,
+-    static constexpr uint32_t kSwizzleCDShift = kSwizzleCDMode > 0 ? (7 - __builtin_ctz(kSwizzleCDMode)) : 0;
++    static constexpr uint32_t kSwizzleCDShift = kSwizzleCDMode > 0 ? (7 - cute::countr_zero(kSwizzleCDMode)) : 0;
+@@ -556 +556 @@ sm120_fp8_fp4_gemm_1d1d_impl(cd_dtype_t* gmem_d, const cd_dtype_t* gmem_c,
+-                            static constexpr uint32_t kBSwizzleB = kSwizzleBMode > 0 ? (__builtin_ctz(kSwizzleBMode) - 4) : 0;
++                            static constexpr uint32_t kBSwizzleB = kSwizzleBMode > 0 ? (cute::countr_zero(kSwizzleBMode) - 4) : 0;
+@@ -558 +558 @@ sm120_fp8_fp4_gemm_1d1d_impl(cd_dtype_t* gmem_d, const cd_dtype_t* gmem_c,
+-                            static constexpr uint32_t kBSwizzleRowShift = kSwizzleBMode > 0 ? (7 - __builtin_ctz(BLOCK_N)) : 0;
++                            static constexpr uint32_t kBSwizzleRowShift = kSwizzleBMode > 0 ? (7 - cute::countr_zero(BLOCK_N)) : 0;
+@@ -1034 +1034 @@ sm120_fp8_fp4_gemm_1d1d_impl(cd_dtype_t* gmem_d, const cd_dtype_t* gmem_c,
+-                            static constexpr uint32_t kBSwizzleB = kSwizzleBMode > 0 ? (__builtin_ctz(kSwizzleBMode) - 4) : 0;
++                            static constexpr uint32_t kBSwizzleB = kSwizzleBMode > 0 ? (cute::countr_zero(kSwizzleBMode) - 4) : 0;
+@@ -1036 +1036 @@ sm120_fp8_fp4_gemm_1d1d_impl(cd_dtype_t* gmem_d, const cd_dtype_t* gmem_c,
+-                            static constexpr uint32_t kBSwizzleRowShift = kSwizzleBMode > 0 ? (7 - __builtin_ctz(BLOCK_N)) : 0;
++                            static constexpr uint32_t kBSwizzleRowShift = kSwizzleBMode > 0 ? (7 - cute::countr_zero(BLOCK_N)) : 0;
+diff --git a/deep_gemm/include/deep_gemm/impls/smxx_layout.cuh b/deep_gemm/include/deep_gemm/impls/smxx_layout.cuh
+index a977c55..35924d9 100644
+--- a/deep_gemm/include/deep_gemm/impls/smxx_layout.cuh
++++ b/deep_gemm/include/deep_gemm/impls/smxx_layout.cuh
+@@ -56 +56 @@ CUTLASS_GLOBAL void transpose_and_pack_fp32_into_ue8m0(float* sf, uint32_t* out,
+-    extern __shared__ uint32_t smem_buffer[];
++    extern __shared__ uint32_t packed_smem_buffer[];
+@@ -79 +79 @@ CUTLASS_GLOBAL void transpose_and_pack_fp32_into_ue8m0(float* sf, uint32_t* out,
+-        ptx::st_shared(reinterpret_cast<uint4*>(smem_buffer) + i, x, y, z, w);
++        ptx::st_shared(reinterpret_cast<uint4*>(packed_smem_buffer) + i, x, y, z, w);
+@@ -84 +84 @@ CUTLASS_GLOBAL void transpose_and_pack_fp32_into_ue8m0(float* sf, uint32_t* out,
+-        ptx::st_shared(smem_buffer + unaligned_idx, local_sf[unaligned_idx]);
++        ptx::st_shared(packed_smem_buffer + unaligned_idx, local_sf[unaligned_idx]);
+@@ -97 +97 @@ CUTLASS_GLOBAL void transpose_and_pack_fp32_into_ue8m0(float* sf, uint32_t* out,
+-            values[j] = sf_k_idx < SF_K ? ptx::ld_shared(smem_buffer + mn_idx * SF_K + sf_k_idx) : 0;
++            values[j] = sf_k_idx < SF_K ? ptx::ld_shared(packed_smem_buffer + mn_idx * SF_K + sf_k_idx) : 0;
+diff --git a/deep_gemm/include/deep_gemm/ptx/ld_st.cuh b/deep_gemm/include/deep_gemm/ptx/ld_st.cuh
+index b9bca55..b48d8f1 100644
+--- a/deep_gemm/include/deep_gemm/ptx/ld_st.cuh
++++ b/deep_gemm/include/deep_gemm/ptx/ld_st.cuh
+@@ -150,0 +151 @@ CUTLASS_DEVICE void st_shared(const void* ptr, uint32_t x, uint32_t y, uint32_t
++#ifndef _WIN32
+@@ -153,0 +155 @@ CUTLASS_DEVICE void st_shared(const __int128_t* ptr, __int128_t val) {
++#endif
+diff --git a/setup.py b/setup.py
+index c4d74ae..33fd83f 100644
+--- a/setup.py
++++ b/setup.py
+@@ -28,2 +28,12 @@ DG_JIT_USE_RUNTIME_API = int(os.environ.get('DG_JIT_USE_RUNTIME_API', '0')) == 1
+-cxx_flags = ['-std=c++17', '-O3', '-fPIC', '-Wno-psabi', '-Wno-deprecated-declarations',
+-             f'-D_GLIBCXX_USE_CXX11_ABI={int(torch.compiled_with_cxx11_abi())}']
++if sys.platform == 'win32':
++    cxx_flags = [
++        '/std:c++20',
++        '/O2',
++        '/permissive-',
++        '/utf-8',
++        '/DNOMINMAX',
++        '/Zc:preprocessor',
++    ]
++else:
++    cxx_flags = ['-std=c++17', '-O3', '-fPIC', '-Wno-psabi', '-Wno-deprecated-declarations',
++                 f'-D_GLIBCXX_USE_CXX11_ABI={int(torch.compiled_with_cxx11_abi())}']
+@@ -31 +41,5 @@ if DG_JIT_USE_RUNTIME_API:
+-    cxx_flags.append('-DDG_JIT_USE_RUNTIME_API')
++    cxx_flags.append(
++        '/DDG_JIT_USE_RUNTIME_API'
++        if sys.platform == 'win32'
++        else '-DDG_JIT_USE_RUNTIME_API'
++    )
+@@ -42,0 +57,2 @@ build_include_dirs = [
++if cuda_include_overlay := os.getenv('DG_CUDA_INCLUDE_OVERLAY'):
++    build_include_dirs.insert(0, cuda_include_overlay)
+@@ -44 +60,10 @@ build_libraries = ['cudart', 'nvrtc']
+-build_library_dirs = [f'{CUDA_HOME}/lib64']
++if sys.platform == 'win32':
++    build_libraries += ['cublas', 'cublasLt']
++    cuda_library_arch = (
++        'arm64'
++        if platform.machine().lower() in ('arm64', 'aarch64')
++        else 'x64'
++    )
++    build_library_dirs = [f'{CUDA_HOME}/lib/{cuda_library_arch}']
++else:
++    build_library_dirs = [f'{CUDA_HOME}/lib64']
