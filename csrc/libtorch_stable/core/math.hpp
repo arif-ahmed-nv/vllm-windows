@@ -5,11 +5,13 @@
 
 inline constexpr uint32_t next_pow_2(uint32_t const num) {
   if (num <= 1) return num;
-#ifdef _WIN32
-  return 1 << (CHAR_BIT * sizeof(num) - __lzcnt(num - 1));
-#else
-  return 1 << (CHAR_BIT * sizeof(num) - __builtin_clz(num - 1));
-#endif
+  uint32_t value = num - 1;
+  value |= value >> 1;
+  value |= value >> 2;
+  value |= value >> 4;
+  value |= value >> 8;
+  value |= value >> 16;
+  return value + 1;
 }
 
 template <typename A, typename B>
