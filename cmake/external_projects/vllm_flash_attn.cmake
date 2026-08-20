@@ -74,6 +74,11 @@ message(STATUS "vllm-flash-attn is available at ${vllm-flash-attn_SOURCE_DIR}")
 if (WIN32)
   foreach(_fa_tgt _vllm_fa2_C _vllm_fa3_C)
     if(TARGET ${_fa_tgt})
+      set_target_properties(${_fa_tgt} PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CUDA_STANDARD 20
+        CUDA_STANDARD_REQUIRED ON)
       target_compile_options(${_fa_tgt} PRIVATE
         $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>
         $<$<COMPILE_LANGUAGE:CXX>:/Zc:preprocessor>

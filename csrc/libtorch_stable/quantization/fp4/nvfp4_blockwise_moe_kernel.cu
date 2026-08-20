@@ -40,7 +40,6 @@
 #include "cutlass/util/tensor_view_io.h"
 #include "cutlass/util/reference/device/gemm.h"
 #include "cutlass/util/reference/device/tensor_compare.h"
-#include "cutlass/util/reference/host/tensor_fill.h"
 #include "cutlass/util/reference/host/gett.hpp"
 #include "cutlass/util/reference/host/tensor_norm.h"
 #include "cutlass/util/reference/host/tensor_compare.h"

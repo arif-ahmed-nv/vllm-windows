@@ -79,6 +79,7 @@ def has_precompiled_rust_extensions() -> bool:
     return not get_missing_precompiled_rust_extension_modules()
 
 IS_WINDOWS = platform.system() == "Windows"
+IS_WINDOWS_ARM64 = IS_WINDOWS and sysconfig.get_platform() == "win-arm64"
 
 if sys.platform.startswith("darwin") and VLLM_TARGET_DEVICE != "cpu":
     logger.warning("VLLM_TARGET_DEVICE automatically set to `cpu` due to macOS")
@@ -300,10 +301,33 @@ class cmake_build_ext(build_ext):
 
         if VLLM_TARGET_DEVICE == 'cuda':
             if IS_WINDOWS:
-                cmake_args += [
-                    f'-Dnvtx3_dir={CUDA_HOME}\\include',
-                    f'-DCUDA_cublas_LIBRARY={CUDA_HOME}\\lib\\x64\\cublas.lib'
-                ]
+                cuda_lib_arch = "arm64" if IS_WINDOWS_ARM64 else "x64"
+                cuda_lib_dir = os.path.join(CUDA_HOME, "lib", cuda_lib_arch)
+                cuda_cmake_libraries = {
+                    "CUDART_LIBRARY": "cudart.lib",
+                    "CUDA_CUDART": "cudart.lib",
+                    "CUDA_CUDART_LIBRARY": "cudart.lib",
+                    "CUDA_CUDA_LIBRARY": "cuda.lib",
+                    "CUDA_DRIVER_LIBRARY": "cuda.lib",
+                    "CUDA_NVRTC_LIB": "nvrtc.lib",
+                    "CUDA_OpenCL_LIBRARY": "OpenCL.lib",
+                    "CUDA_cublasLt_LIBRARY": "cublasLt.lib",
+                    "CUDA_cublas_LIBRARY": "cublas.lib",
+                    "CUDA_cuda_driver_LIBRARY": "cuda.lib",
+                    "CUDA_cudart_LIBRARY": "cudart.lib",
+                    "CUDA_cudart_static_LIBRARY": "cudart_static.lib",
+                    "CUDA_cufftw_LIBRARY": "cufftw.lib",
+                    "CUDA_nvml_LIBRARY": "nvml.lib",
+                    "CUDA_nvrtc_LIBRARY": "nvrtc.lib",
+                    "NVRTC_LIBRARY": "nvrtc.lib",
+                    "_CUBLASLT_LIBRARY": "cublasLt.lib",
+                    "_CUBLAS_LIBRARY": "cublas.lib",
+                }
+                cmake_args.append(f"-Dnvtx3_dir={CUDA_HOME}\\include")
+                cmake_args.extend(
+                    f"-D{name}={os.path.join(cuda_lib_dir, filename)}"
+                    for name, filename in cuda_cmake_libraries.items()
+                )
 
         # Override the base directory for FetchContent downloads to $ROOT/.deps
         # This allows sharing dependencies between profiles,

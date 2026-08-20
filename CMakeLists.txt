@@ -265,6 +265,9 @@ endif()
 # Set CUDA include flags for CXX compiler.
 #
 if(VLLM_GPU_LANG STREQUAL "CUDA")
+  if(DEFINED ENV{VLLM_CUDA_INCLUDE_OVERLAY})
+    include_directories(BEFORE "$ENV{VLLM_CUDA_INCLUDE_OVERLAY}")
+  endif()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \"-I${CUDA_TOOLKIT_ROOT_DIR}/include\"")
   if(CUDA_VERSION VERSION_GREATER_EQUAL 13.0)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \"-I${CUDA_TOOLKIT_ROOT_DIR}/include/cccl\"")

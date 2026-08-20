@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 import torch
@@ -43,9 +44,18 @@ info = json.loads(
 cuda_home = cpp_extension.CUDA_HOME
 if cuda_home is None:
     sys.exit("CUDA_HOME not found; cannot build DeepGEMM _C")
+library_paths = cpp_extension.library_paths(device_type="cuda")
+if is_windows and sysconfig.get_platform() == "win-arm64":
+    cuda_x64_lib = (Path(cuda_home) / "lib" / "x64").resolve()
+    library_paths = [
+        path for path in library_paths if Path(path).resolve() != cuda_x64_lib
+    ]
+    library_paths.append(str(Path(cuda_home) / "lib" / "arm64"))
+cuda_include_overlay = os.environ.get("VLLM_CUDA_INCLUDE_OVERLAY")
 # CCCL lives outside the standard CUDAToolkit search (mirrors DeepGEMM's setup.py).
 includes = [
     info["INCLUDEPY"],
+    *([cuda_include_overlay] if cuda_include_overlay else []),
     f"{cuda_home}/include",
     f"{cuda_home}/include/cccl",
     str(src / "csrc"),
@@ -78,7 +88,7 @@ if is_windows:
         f"/Fe:{str(out / f"_C{info['EXT_SUFFIX']}")}",
         f"/Fo:{out}{os.sep}",
         "/link",
-        *(f"/LIBPATH:{p}" for p in cpp_extension.library_paths(device_type="cuda")),
+        *(f"/LIBPATH:{p}" for p in library_paths),
         f"/LIBPATH:{str(Path(sys.base_prefix) / "libs")}",
         f"torch.lib",
         f"torch_python.lib",
@@ -106,7 +116,7 @@ else:
         f"-D_GLIBCXX_USE_CXX11_ABI={int(torch.compiled_with_cxx11_abi())}",
         *(f"-I{p}" for p in includes),
         str(src / "csrc/python_api.cpp"),
-        *(f"-L{p}" for p in cpp_extension.library_paths(device_type="cuda")),
+        *(f"-L{p}" for p in library_paths),
         f"-L{cuda_home}/lib64",
         "-ltorch",
         "-ltorch_python",
