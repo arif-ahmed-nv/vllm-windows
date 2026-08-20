@@ -6,6 +6,10 @@
 #include "torch_utils.h"
 
 #ifndef USE_ROCM
+  // Legacy Windows SAL defines __out, colliding with CUDA 13.4 CCCL.
+  #ifdef __out
+    #undef __out
+  #endif
   #include "cooperative_topk.cuh"
 namespace ct = vllm::cooperative;
 namespace hist4096 = vllm::topk_histogram_4096;

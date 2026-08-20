@@ -30,6 +30,33 @@ endif()
 FetchContent_MakeAvailable(flashmla)
 message(STATUS "FlashMLA is available at ${flashmla_SOURCE_DIR}")
 
+if(WIN32)
+  set(FLASHMLA_WINDOWS_PATCH
+      "${CMAKE_CURRENT_LIST_DIR}/../patches/flashmla-sm103-windows.patch")
+  set(FLASHMLA_CUTLASS_ADAPTER
+      "${flashmla_SOURCE_DIR}/csrc/cutlass/include/cutlass/cuda_host_adapter.hpp")
+  if(NOT EXISTS "${FLASHMLA_CUTLASS_ADAPTER}")
+    message(FATAL_ERROR
+      "FlashMLA CUTLASS submodule is missing. Initialize submodules under "
+      "${flashmla_SOURCE_DIR} before configuring vLLM.")
+  endif()
+
+  vllm_apply_patch(
+    "FlashMLA Windows SM103"
+    "${flashmla_SOURCE_DIR}"
+    "${FLASHMLA_WINDOWS_PATCH}"
+    UNIDIFF_ZERO)
+
+  file(READ
+    "${flashmla_SOURCE_DIR}/csrc/kerutils/include/kerutils/device/common.h"
+    FLASHMLA_COMMON_HEADER)
+  string(FIND "${FLASHMLA_COMMON_HEADER}" "using int128_t = int4;"
+         FLASHMLA_PATCH_MARKER)
+  if(FLASHMLA_PATCH_MARKER EQUAL -1)
+    message(FATAL_ERROR "FlashMLA Windows SM103 patch marker is missing")
+  endif()
+endif()
+
 # Vendor FlashMLA interface into vLLM with torch-ops shim.
 set(FLASHMLA_VENDOR_DIR "${CMAKE_SOURCE_DIR}/vllm/third_party/flashmla")
 file(MAKE_DIRECTORY "${FLASHMLA_VENDOR_DIR}")
@@ -71,6 +98,11 @@ endif()
 cuda_archs_loose_intersection(FLASH_MLA_ARCHS "${SUPPORT_ARCHS}" "${CUDA_ARCHS}")
 if(FLASH_MLA_ARCHS)
     message(STATUS "FlashMLA CUDA architectures: ${FLASH_MLA_ARCHS}")
+    if(WIN32)
+        run_python(FLASHMLA_PYTHON_LIBDIR
+            "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
+            "Unable to determine the CPython import-library directory")
+    endif()
     set(VLLM_FLASHMLA_GPU_FLAGS ${VLLM_GPU_FLAGS})
     list(APPEND VLLM_FLASHMLA_GPU_FLAGS "--expt-relaxed-constexpr" "--expt-extended-lambda" "--use_fast_math")
 
@@ -160,6 +192,9 @@ if(FLASH_MLA_ARCHS)
     target_compile_options(_flashmla_C PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:-std=c++20>
         $<$<COMPILE_LANGUAGE:CUDA>:-std=c++20>)
+    if(WIN32)
+        target_link_directories(_flashmla_C PRIVATE "${FLASHMLA_PYTHON_LIBDIR}")
+    endif()
 
     # _flashmla_C is now ABI-stable torch 2.11+
     target_compile_definitions(_flashmla_C PRIVATE
@@ -184,6 +219,10 @@ if(FLASH_MLA_ARCHS)
         TORCH_TARGET_VERSION=0x020B000000000000ULL)
     if(VLLM_GPU_LANG STREQUAL "CUDA")
         target_compile_definitions(_flashmla_extension_C PRIVATE USE_CUDA)
+    endif()
+    if(WIN32)
+        target_link_directories(
+            _flashmla_extension_C PRIVATE "${FLASHMLA_PYTHON_LIBDIR}")
     endif()
 else()
     message(STATUS "FlashMLA will not compile: unsupported CUDA architecture ${CUDA_ARCHS}")

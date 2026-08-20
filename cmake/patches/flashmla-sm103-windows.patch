@@ -1,0 +1,328 @@
+diff --git a/csrc/extension/sm90/dense_fp8/softmax.h b/csrc/extension/sm90/dense_fp8/softmax.h
+index 1d6d553..48f55f6 100644
+--- a/csrc/extension/sm90/dense_fp8/softmax.h
++++ b/csrc/extension/sm90/dense_fp8/softmax.h
+@@ -75,2 +75,3 @@ __forceinline__ __device__ auto scale_apply_exp2(Tensor<Engine0, Layout0> &tenso
+-        // If we don't have float around M_LOG2E the multiplication is done in fp64.
+-        const float max_scaled = max(mi) == -INFINITY ? 0.f : max(mi) * (Scale_max ? scale : float(M_LOG2E));
++        constexpr float kLog2E = 1.4426950408889634074f;
++        const float max_scaled =
++            max(mi) == -INFINITY ? 0.f : max(mi) * (Scale_max ? scale : kLog2E);
+diff --git a/csrc/kerutils/include/kerutils/device/common.h b/csrc/kerutils/include/kerutils/device/common.h
+index d13e7a9..93789e4 100644
+--- a/csrc/kerutils/include/kerutils/device/common.h
++++ b/csrc/kerutils/include/kerutils/device/common.h
+@@ -38,0 +39,5 @@ using transac_bar_t = cutlass::arch::ClusterTransactionBarrier;
++#ifdef _MSC_VER
++using int128_t = int4;
++#else
++using int128_t = __int128_t;
++#endif
+diff --git a/csrc/kerutils/include/kerutils/device/sm100/gemm.cuh b/csrc/kerutils/include/kerutils/device/sm100/gemm.cuh
+index 8af4edc..b5d8505 100644
+--- a/csrc/kerutils/include/kerutils/device/sm100/gemm.cuh
++++ b/csrc/kerutils/include/kerutils/device/sm100/gemm.cuh
+@@ -33,0 +34 @@ struct SM100_MMA_F16BF16_WS_TS_NOELECT
++#if defined(CUTE_ARCH_TCGEN05_F16F32_MMA_ENABLED)
+@@ -41,0 +43,3 @@ struct SM100_MMA_F16BF16_WS_TS_NOELECT
++#else
++    CUTE_INVALID_CONTROL_PATH("Attempting to use SM100_MMA_F16BF16_WS_TS_NOELECT without CUTE_ARCH_TCGEN05_F16F32_MMA_ENABLED");
++#endif
+@@ -130,0 +135 @@ struct SM100_MMA_F16BF16_WS_SS_NOELECT
++#if defined(CUTE_ARCH_TCGEN05_F16F32_MMA_ENABLED)
+@@ -138,0 +144,3 @@ struct SM100_MMA_F16BF16_WS_SS_NOELECT
++#else
++    CUTE_INVALID_CONTROL_PATH("Attempting to use SM100_MMA_F16BF16_WS_SS_NOELECT without CUTE_ARCH_TCGEN05_F16F32_MMA_ENABLED");
++#endif
+@@ -445,0 +454 @@ struct SM100_MMA_F16BF16_TS_NOELECT
++#if defined(CUTE_ARCH_TCGEN05_F16F32_MMA_ENABLED)
+@@ -455,0 +465,3 @@ struct SM100_MMA_F16BF16_TS_NOELECT
++#else
++    CUTE_INVALID_CONTROL_PATH("Attempting to use SM100_MMA_F16BF16_TS_NOELECT without CUTE_ARCH_TCGEN05_F16F32_MMA_ENABLED");
++#endif
+@@ -548,0 +561 @@ struct SM100_MMA_F16BF16_SS_NOELECT
++#if defined(CUTE_ARCH_TCGEN05_F16F32_MMA_ENABLED)
+@@ -558,0 +572,3 @@ struct SM100_MMA_F16BF16_SS_NOELECT
++#else
++    CUTE_INVALID_CONTROL_PATH("Attempting to use SM100_MMA_F16BF16_SS_NOELECT without CUTE_ARCH_TCGEN05_F16F32_MMA_ENABLED");
++#endif
+diff --git a/csrc/kerutils/include/kerutils/device/sm80/helpers.cuh b/csrc/kerutils/include/kerutils/device/sm80/helpers.cuh
+index 551b0f1..9737d2a 100644
+--- a/csrc/kerutils/include/kerutils/device/sm80/helpers.cuh
++++ b/csrc/kerutils/include/kerutils/device/sm80/helpers.cuh
+@@ -33 +33,7 @@ CUTE_DEVICE
+-void st_shared(void* ptr, __int128_t val) {
++void st_shared(void* ptr, int128_t val) {
++#ifdef _MSC_VER
++    asm volatile("st.shared.v4.b32 [%0], {%1, %2, %3, %4};"
++                 :
++                 : "l"(__cvta_generic_to_shared(ptr)), "r"(val.x), "r"(val.y),
++                   "r"(val.z), "r"(val.w));
++#else
+@@ -34,0 +41,16 @@ void st_shared(void* ptr, __int128_t val) {
++#endif
++}
++
++CUTE_DEVICE
++void st_shared(uint32_t address, int128_t val) {
++#ifdef _MSC_VER
++    asm volatile(
++        "st.weak.shared::cta.v4.b32 [%0], {%1, %2, %3, %4};"
++        :
++        : "r"(address), "r"(val.x), "r"(val.y), "r"(val.z), "r"(val.w));
++#else
++    asm volatile(
++        "st.weak.shared::cta.b128 [%0], %1;"
++        :
++        : "r"(address), "q"(val));
++#endif
+@@ -39 +61 @@ void st_shared(void* ptr, float4 val) {
+-    st_shared(ptr, *(__int128_t*)&val);
++    st_shared(ptr, *reinterpret_cast<int128_t*>(&val));
+@@ -43,2 +65,8 @@ CUTE_DEVICE
+-__int128_t ld_shared(void* ptr) {
+-    __int128_t val;
++int128_t ld_shared(void* ptr) {
++#ifdef _MSC_VER
++    int128_t val;
++    asm volatile("ld.shared.v4.b32 {%0, %1, %2, %3}, [%4];"
++                 : "=r"(val.x), "=r"(val.y), "=r"(val.z), "=r"(val.w)
++                 : "l"(__cvta_generic_to_shared(ptr)));
++#else
++    int128_t val;
+@@ -45,0 +74 @@ __int128_t ld_shared(void* ptr) {
++#endif
+@@ -51,2 +80,2 @@ float4 ld_shared_float4(void* ptr) {
+-    __int128_t temp = ld_shared(ptr);
+-    return *(float4*)&temp;
++    auto temp = ld_shared(ptr);
++    return *reinterpret_cast<float4*>(&temp);
+diff --git a/csrc/kerutils/include/kerutils/device/sm90/intrinsics.cuh b/csrc/kerutils/include/kerutils/device/sm90/intrinsics.cuh
+index 07c5f9a..0843e17 100644
+--- a/csrc/kerutils/include/kerutils/device/sm90/intrinsics.cuh
++++ b/csrc/kerutils/include/kerutils/device/sm90/intrinsics.cuh
+@@ -12 +12 @@ static void st_async(void* dst_ptr, const T& data, transac_bar_t &mbar) {
+-    long2 data_long2 = *reinterpret_cast<const long2*>(&data);
++    longlong2 data_long2 = *reinterpret_cast<const longlong2*>(&data);
+diff --git a/csrc/sm100/decode/head64/config.h b/csrc/sm100/decode/head64/config.h
+index 401f3ac..1da1b1e 100644
+--- a/csrc/sm100/decode/head64/config.h
++++ b/csrc/sm100/decode/head64/config.h
+@@ -158,0 +159,23 @@ using SmemLayoutKTilesTransposed_SW64 = decltype(composition(
++struct QoStorageModel1 {
++    array_aligned<bf16, cosize_v<SmemLayoutQ_SW128>> q;
++    union {
++        array_aligned<bf16, cosize_v<SmemLayoutOBuf>> o_buf;
++        array_aligned<float, cosize_v<SmemLayoutOAccumBuf>> o_accum_buf;
++    } o;
++};
++
++struct QoStorageV32 {
++    array_aligned<bf16, cosize_v<SmemLayoutQ_SW128>> q;
++    bf16 q_sw64[B_H*64];
++    union {
++        array_aligned<bf16, cosize_v<SmemLayoutOBuf>> o_buf;
++        array_aligned<float, cosize_v<SmemLayoutOAccumBuf>> o_accum_buf;
++    } o;
++};
++
++using QoStorage = std::conditional_t<
++    D_Q_SW64 == 0,
++    QoStorageModel1,
++    QoStorageV32
++>;
++
+@@ -161,8 +184 @@ struct SharedMemoryPlan {
+-        struct {
+-            array_aligned<bf16, cosize_v<SmemLayoutQ_SW128>> q;
+-            bf16 q_sw64[B_H*D_Q_SW64];  // NOTE D_Q_SW64 may be 0 but array_aligned<bf16, 0> will have a size of 16, so we use array here. The former tensor (`q`) promises its alignment.
+-            union {
+-                array_aligned<bf16, cosize_v<SmemLayoutOBuf>> o_buf;
+-                array_aligned<float, cosize_v<SmemLayoutOAccumBuf>> o_accum_buf;
+-            } o;
+-        } qo;
++        QoStorage qo;
+diff --git a/csrc/sm100/decode/head64/kernel.cuh b/csrc/sm100/decode/head64/kernel.cuh
+index 7c46921ccf62ded66930975c1a7178940fa5fff4..d7a06a23278942687ee638c4a9b2a6e840ea7372 100644
+GIT binary patch
+delta 645
+zcmZ2KmAQ2W^M+n0`J&X!ypq(Sf}+%t_~gXm5}WK&D=VOop^-&=iI&~uSx$13KRU}Q
+zXc17j`M6UU2SL+5ILl40m5>xl&d-TYN-R!Q&{oLOGSSpjumxG7LC6vfwfyKTEu+}U
+zjPk0RCwSlYBFe&qYSzh3(=<Rfs1vlII5{yVwRrMGN8QPF-5i@gPs`+*EGjHGc|(}M
+z<hvg1lj9evO@83P!c|-nU!0Lxl$xS3*-=SSGP$%UJ}<u@73{0{QeXhaC#IwnDQJUi
+zRWnl1QqaiB2O1q;lwTg7nNk51@C)^gcMtLp4G0Eu%uGN^qZMTpAj&`i1X1P`AL1Y2
+z4OXH#`C*t8OG;u%A}|0%HosrAoE@ZRGT$aym>abSdJv>NJ}J%6Z1TayB9k9%l$(4Y
+zL}>DXOxei>PMVYZma}b+TD^shYUTpXeruvId9|tXWdC&W$y%G0C!a1B-K@2_RU82Q
+CGwsL#
+
+delta 525
+zcmb7AO-lk%6eWtZAgrL$%DN3`Gn4p*N*FCN+EkFB)WT$Z>N7`2U(Gx;f}l-{pce7S
+zTIVVdQfAdI_d!3Qe-QK!8U>@=wYneY-h0lumk)!_cZ1EF$QUn4a+&)4s}dCj)`%=v
+zK>X9wO`H4XzOi$wjn5E8N+S)!3KYbE0PB5wyptpfqCd$779F~0_hWnH=PbLe1<gHP
+z_EuYB-ry9oUz_!>dwFyMdXPlHnMD+__OdmAv=UT^f~c%u;5m)Ds~8pCS{|u58xChE
+za;FU&kZ^dDE^zqP4$B;C6=zwqI5!*yPUU#^{%9KlzsR$8!@41c0)}>lWRN0t%*feO
+zF(SqHqB{m62rl4GIKD$K0D#8>e#j9OH2DmZ9G}klLagnaP6}&X@Bl*|RWQ)JtU>Cx
+z))eHiid{gc5v#KCFe8BsDIFU|R5-$AtRjjvh{fGoAeS|YQ5HzfsAKw7{l&yuPxCfc
+i-*-E@q^<~Gz|NwHarSyKUAHv;G0i-|N&Qowv3>(!tE+PW
+
+diff --git a/csrc/sm100/prefill/sparse/fwd/head128/phase1.cuh b/csrc/sm100/prefill/sparse/fwd/head128/phase1.cuh
+index 67324e6..31803a4 100644
+--- a/csrc/sm100/prefill/sparse/fwd/head128/phase1.cuh
++++ b/csrc/sm100/prefill/sparse/fwd/head128/phase1.cuh
+@@ -662 +662 @@ void run_fwd_phase1_kernel(const SparseAttnFwdParams& params) {
+-        (typename Kernel::template SmemLayoutQTiles<D_QK/64>){}
++        typename Kernel::template SmemLayoutQTiles<D_QK/64>{}
+@@ -675 +675 @@ void run_fwd_phase1_kernel(const SparseAttnFwdParams& params) {
+-        (typename Kernel::template SmemLayoutOTiles<1>){}
++        typename Kernel::template SmemLayoutOTiles<1>{}
+diff --git a/csrc/sm100/prefill/sparse/fwd_for_small_topk/head128/config.h b/csrc/sm100/prefill/sparse/fwd_for_small_topk/head128/config.h
+index e488007..b6fa417 100644
+--- a/csrc/sm100/prefill/sparse/fwd_for_small_topk/head128/config.h
++++ b/csrc/sm100/prefill/sparse/fwd_for_small_topk/head128/config.h
+@@ -85 +85 @@ struct tmem_cols {
+-struct SharedMemoryPlan {
++struct PrefillSharedMemoryPlan {
+@@ -88 +87,0 @@ struct SharedMemoryPlan {
+-    array_aligned<fp8_e4m3, B_TOPK*(D_K/2)> K_raw[NUM_RAW_K_BUFS];
+@@ -108,2 +106,0 @@ struct SharedMemoryPlan {
+-    // The following barriers are decode-only
+-    transac_bar_t bar_raw_KV_full[NUM_RAW_K_BUFS], bar_raw_KV_empty[NUM_RAW_K_BUFS];
+@@ -115,0 +113,35 @@ struct SharedMemoryPlan {
++struct DecodeSharedMemoryPlan {
++    array_aligned<bf16, (H_Q/2)*D_Q> Q; // Will be output for epilogue
++    array_aligned<bf16, B_TOPK*(D_K/2)> K[NUM_K_BUFS];
++    array_aligned<fp8_e4m3, B_TOPK*(D_K/2)> K_raw[2];
++    array_aligned<bf16, (H_Q/2)*B_TOPK> S;
++    float P_exchange[4][(H_Q/2/2)*(B_TOPK/2)];
++    float rowwise_max_buf[128], rowwise_li_buf[128];
++
++    CUTE_ALIGNAS(16) char is_k_valid[NUM_INDEX_BUFS][B_TOPK/8];
++    CUTE_ALIGNAS(16) int tma_coord[NUM_INDEX_BUFS][B_TOPK];
++    CUTE_ALIGNAS(16) fp8_e8m0 scales[NUM_INDEX_BUFS][B_TOPK][NUM_SCALES_EACH_TOKEN/2];
++
++    transac_bar_t bar_sQ_full, bar_tQ_empty, bar_tQ_full;
++    transac_bar_t bar_tOut_full, bar_tOut_empty;
++    transac_bar_t bar_KV_full[NUM_K_BUFS], bar_KV_empty[NUM_K_BUFS];
++    transac_bar_t bar_P_empty;
++    transac_bar_t bar_QK_done, bar_SV_done;
++    transac_bar_t bar_S_O_full;
++    transac_bar_t bar_li_full, bar_li_empty;
++
++    transac_bar_t bar_clc_full, bar_clc_empty;
++
++    transac_bar_t bar_raw_KV_full[2], bar_raw_KV_empty[2];
++    transac_bar_t bar_valid_coord_scales_full[NUM_INDEX_BUFS], bar_valid_coord_scales_empty[NUM_INDEX_BUFS];
++
++    ku::CLCResponseObj clc_response_obj;
++    array_aligned<uint32_t, 1> tmem_start_addr;
++};
++
++using SharedMemoryPlan = std::conditional_t<
++    IS_DECODE,
++    DecodeSharedMemoryPlan,
++    PrefillSharedMemoryPlan
++>;
++
+diff --git a/csrc/sm100/prefill/sparse/fwd_for_small_topk/head128/phase1.cuh b/csrc/sm100/prefill/sparse/fwd_for_small_topk/head128/phase1.cuh
+index 388abc8776bc9dcbc724ec44a66914e119210178..f9dcc76f59e11be9195d3f923362c8d49897cb21 100644
+GIT binary patch
+delta 400
+zcmZqP%RF;0^M;?=GDWGGc_pbu1x2YP@yUtBB{pd}`H3YaT6P-w@skbnWG5@s3r+q%
+zLuj&}iT31L6Yt3Z<t&rqtxYEfNV7~{Yi>9>Hb{K4v+g=JNt`Ba{%0(tA(UNeWd*d#
+z(8wabL_sYju_STwK_i990VP1=HgQd^F_r}z`Cuo@<ijzdlP9Jqg7|7i3R(&pIr+(n
+zIq^mL<?)#*6+i*MP~Uj>Apg*SU?9iLL_r&>oKqU2GC4m7s?sSw#6Q3rtZMQ_V|kE~
+zEMU7ACP+^{P%1K6AysfPKeyy&_PDw1FiR)<C(BHJvRZ8NhhzaYEewAl`ve$HAmczm
+pB?B~^W3qvz*yI3Xwn;NZCr|KUo$PNSx!FC<$_G#A^lkd84FE%-jsO4v
+
+delta 493
+zcmbQam$`W_^M;?=!W!}MnRz9KMi%iUTAKOsNoj^=lNXk2PCl?ncyfk`_T=d%-jg2~
+zux!4dqt7miqF5teL0chH%VhFLN9oB6+{D0I0;E|sXP6vPXNr%XtQVtal31LpP?n#Q
+zSdy8Os-U4%T%uQ=nwYIuoRL_Rnqp;@T#~4l1hiZsTGb#{M?uxlIwntP@&-R8Mk^4>
+zW~HE1q@*#qJ4P~A!AMIZCqFqcC%!1ZJU%m}Ld!4IH{LzSKQtg%%ghAm7Km(eehygH
+zDL%wMz#Ax|si~u&RH&qpl30?csi2^sudiUFkd|MhP@GwnnxCct_A=vixmZnWuw;0u
+zLPla)szOOdX0bv7vIi0rGE$3DbrkYTfOL6gF-T3SLUMj?0nm3v3hAkNsYQt;sl^Jx
+zA$qO~nR&$}sfj5H`Ds9Y@MJ?vsmXt*i%$lI(BuaioRj&vB`5En=R3K6vB+l8I2-oK
+zf0AS*briHv!WiUcNSu7Ek_Kxvm?{MgXbxcfNNo;Gv+_ZUmtttVC_0F2KCtPgHUR0y
+BrE>rP
+
+diff --git a/csrc/sm90/decode/dense/splitkv_mla.cuh b/csrc/sm90/decode/dense/splitkv_mla.cuh
+index cdd5441..3151b19 100644
+--- a/csrc/sm90/decode/dense/splitkv_mla.cuh
++++ b/csrc/sm90/decode/dense/splitkv_mla.cuh
+@@ -207 +207 @@ __forceinline__ __device__ void warpgroup_cooperative_qkt_gemm(
+-    TiledMMA tiled_mma_sQ = (typename T::TiledMMA_QK_sQ){};
++    TiledMMA tiled_mma_sQ = typename T::TiledMMA_QK_sQ{};
+@@ -211 +211 @@ __forceinline__ __device__ void warpgroup_cooperative_qkt_gemm(
+-    TiledMMA tiled_mma_rQ = (typename T::TiledMMA_QK_rQ){};
++    TiledMMA tiled_mma_rQ = typename T::TiledMMA_QK_rQ{};
+@@ -269 +269 @@ __forceinline__ __device__ void warpgroup_cooperative_qkt_gemm_no_pipeline(
+-    TiledMMA tiled_mma = (typename T::TiledMMA_QK_sQ){};
++    TiledMMA tiled_mma = typename T::TiledMMA_QK_sQ{};
+@@ -290 +290 @@ __forceinline__ __device__ void warpgroup_cooperative_pv_gemm_localP(
+-    TiledMMA tiled_mma = (typename T::TiledMMA_PV_LocalP){};
++    TiledMMA tiled_mma = typename T::TiledMMA_PV_LocalP{};
+@@ -314 +314 @@ __forceinline__ __device__ void warpgroup_cooperative_pv_gemm_remoteP(
+-    TiledMMA tiled_mma = (typename T::TiledMMA_PV_RemoteP){};
++    TiledMMA tiled_mma = typename T::TiledMMA_PV_RemoteP{};
+@@ -491 +491 @@ __forceinline__ __device__ void save_rPb_to_sP(
+-        (typename T::TiledMMA_QK_sQ){}
++        typename T::TiledMMA_QK_sQ{}
+@@ -513 +513 @@ __forceinline__ __device__ void retrieve_rP_from_sP(
+-        (typename T::TiledMMA_PV_LocalP){}
++        typename T::TiledMMA_PV_LocalP{}
+@@ -638 +638 @@ __forceinline__ __device__ void store_o(
+-            (typename T::TiledMMA_PV_LocalP){}
++            typename T::TiledMMA_PV_LocalP{}
+@@ -720 +720 @@ __forceinline__ __device__ auto get_half_V(
+-    Tensor sV = make_tensor(sK.data(), (typename T::SmemLayoutV){});
++    Tensor sV = make_tensor(sK.data(), typename T::SmemLayoutV{});
+@@ -982,4 +982,4 @@ flash_fwd_splitkv_mla_kernel(__grid_constant__ const DenseAttnDecodeParams param
+-    Tensor sQ = make_tensor(make_smem_ptr(plan.smem_sQ.data()), (typename T::SmemLayoutQ){});
+-    Tensor sK0 = make_tensor(make_smem_ptr(plan.smem_sK0.data()), (typename T::SmemLayoutK){});
+-    Tensor sK1 = make_tensor(make_smem_ptr(plan.smem_sK1.data()), (typename T::SmemLayoutK){});
+-    Tensor sP0 = make_tensor(make_smem_ptr(plan.smem_sP0.data()), (typename T::SmemLayoutP0){});
++    Tensor sQ = make_tensor(make_smem_ptr(plan.smem_sQ.data()), typename T::SmemLayoutQ{});
++    Tensor sK0 = make_tensor(make_smem_ptr(plan.smem_sK0.data()), typename T::SmemLayoutK{});
++    Tensor sK1 = make_tensor(make_smem_ptr(plan.smem_sK1.data()), typename T::SmemLayoutK{});
++    Tensor sP0 = make_tensor(make_smem_ptr(plan.smem_sP0.data()), typename T::SmemLayoutP0{});
+@@ -1088 +1088 @@ flash_fwd_splitkv_mla_kernel(__grid_constant__ const DenseAttnDecodeParams param
+-        Tensor rO = partition_fragment_C((typename T::TiledMMA_PV_LocalP){}, Shape<Int<T::BLOCK_SIZE_M>, Int<T::HEAD_DIM_V / 2>>{});	// ((2, 2, 32), 1, 1)
++        Tensor rO = partition_fragment_C(typename T::TiledMMA_PV_LocalP{}, Shape<Int<T::BLOCK_SIZE_M>, Int<T::HEAD_DIM_V / 2>>{});	// ((2, 2, 32), 1, 1)
+@@ -1107 +1107 @@ flash_fwd_splitkv_mla_kernel(__grid_constant__ const DenseAttnDecodeParams param
+-            Tensor rP0 = make_tensor<float>((typename T::rP0Layout){});
++            Tensor rP0 = make_tensor<float>(typename T::rP0Layout{});
+@@ -1151 +1151 @@ flash_fwd_splitkv_mla_kernel(__grid_constant__ const DenseAttnDecodeParams param
+-            Tensor rP1 = make_tensor<float>((typename T::rP0Layout){});
++            Tensor rP1 = make_tensor<float>(typename T::rP0Layout{});
+diff --git a/csrc/sm90/decode/sparse_fp8/components/helpers.h b/csrc/sm90/decode/sparse_fp8/components/helpers.h
+index d47e492..6b811b6 100644
+--- a/csrc/sm90/decode/sparse_fp8/components/helpers.h
++++ b/csrc/sm90/decode/sparse_fp8/components/helpers.h
+@@ -80 +80 @@ static void st_async_128b(void* dst_ptr, const T& data, const transac_bar_t* mba
+-    long2 data_long2 = *reinterpret_cast<const long2*>(&data);
++    longlong2 data_long2 = *reinterpret_cast<const longlong2*>(&data);
+diff --git a/csrc/sm90/decode/sparse_fp8/splitkv_mla.cuh b/csrc/sm90/decode/sparse_fp8/splitkv_mla.cuh
+index 9994568..5e011e8 100644
+--- a/csrc/sm90/decode/sparse_fp8/splitkv_mla.cuh
++++ b/csrc/sm90/decode/sparse_fp8/splitkv_mla.cuh
+@@ -589 +589,2 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::devfunc(const SparseAttnD
+-                            *(__int128_t*)(sK_nope_base + smem_offset) = *(__int128_t*)&cur_bf16x8;
++                            *reinterpret_cast<ku::int128_t*>(sK_nope_base + smem_offset) =
++                                *reinterpret_cast<ku::int128_t*>(&cur_bf16x8);
+@@ -619 +620,2 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::devfunc(const SparseAttnD
+-                        *(__int128_t*)(sK_rope_base + smem_offset) = *(__int128_t*)&cur_bf16x8;
++                        *reinterpret_cast<ku::int128_t*>(sK_rope_base + smem_offset) =
++                            *reinterpret_cast<ku::int128_t*>(&cur_bf16x8);
+diff --git a/csrc/smxx/decode/combine/combine.cu b/csrc/smxx/decode/combine/combine.cu
+index 7f23874..147eb30 100644
+--- a/csrc/smxx/decode/combine/combine.cu
++++ b/csrc/smxx/decode/combine/combine.cu
+@@ -99 +99 @@ flash_fwd_mla_combine_kernel(__grid_constant__ const CombineParams params) {
+-            gLse(warp_idx) = global_lse / (float)M_LOG2E;
++            gLse(warp_idx) = global_lse / CUDART_L2E_F;
+diff --git a/csrc/cutlass/include/cutlass/cuda_host_adapter.hpp b/csrc/cutlass/include/cutlass/cuda_host_adapter.hpp
+index 8cf41c1b..c9790628 100644
+--- a/csrc/cutlass/include/cutlass/cuda_host_adapter.hpp
++++ b/csrc/cutlass/include/cutlass/cuda_host_adapter.hpp
+@@ -408 +407,0 @@ public:
+-  CUTLASS_HOST_DEVICE

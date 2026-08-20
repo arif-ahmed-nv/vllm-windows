@@ -39,6 +39,89 @@ function (run_python OUT EXPR ERR_MSG)
   set(${OUT} ${PYTHON_OUT} PARENT_SCOPE)
 endfunction()
 
+function(vllm_apply_patch PATCH_NAME WORKING_DIRECTORY PATCH_FILE)
+  set(options UNIDIFF_ZERO)
+  set(oneValueArgs STRIP)
+  set(multiValueArgs INCLUDE)
+  cmake_parse_arguments(
+    arg "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+  find_package(Git REQUIRED)
+  if(NOT EXISTS "${PATCH_FILE}")
+    message(FATAL_ERROR "${PATCH_NAME} patch not found: ${PATCH_FILE}")
+  endif()
+
+  string(SHA256 PATCH_PATH_HASH "${PATCH_FILE}")
+  set(PATCH_WORK_DIR "${CMAKE_BINARY_DIR}/vllm-patches")
+  set(NORMALIZED_PATCH_FILE
+      "${PATCH_WORK_DIR}/${PATCH_PATH_HASH}.patch")
+  file(MAKE_DIRECTORY "${PATCH_WORK_DIR}")
+  if(NOT Python_EXECUTABLE)
+    find_package(Python COMPONENTS Interpreter REQUIRED)
+  endif()
+  execute_process(
+    COMMAND "${Python_EXECUTABLE}" -c
+            "from pathlib import Path; import sys; data = Path(sys.argv[1]).read_bytes(); Path(sys.argv[2]).write_bytes(data.replace(b'\\r\\n', b'\\n').replace(b'\\r', b'\\n'))"
+            "${PATCH_FILE}" "${NORMALIZED_PATCH_FILE}"
+    RESULT_VARIABLE NORMALIZE_RESULT
+    ERROR_VARIABLE NORMALIZE_ERROR
+    ERROR_STRIP_TRAILING_WHITESPACE)
+  if(NOT NORMALIZE_RESULT EQUAL 0)
+    message(FATAL_ERROR
+      "Failed to normalize ${PATCH_NAME} patch:\n${NORMALIZE_ERROR}")
+  endif()
+
+  set(PATCH_OPTIONS)
+  if(arg_UNIDIFF_ZERO)
+    list(APPEND PATCH_OPTIONS "--unidiff-zero")
+  endif()
+  if(arg_STRIP)
+    list(APPEND PATCH_OPTIONS "-p${arg_STRIP}")
+  endif()
+  foreach(PATTERN IN LISTS arg_INCLUDE)
+    list(APPEND PATCH_OPTIONS "--include=${PATTERN}")
+  endforeach()
+
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+            ${PATCH_OPTIONS} "${NORMALIZED_PATCH_FILE}"
+    WORKING_DIRECTORY "${WORKING_DIRECTORY}"
+    RESULT_VARIABLE REVERSE_RESULT
+    OUTPUT_QUIET
+    ERROR_QUIET)
+  if(REVERSE_RESULT EQUAL 0)
+    message(STATUS "${PATCH_NAME} patch is already applied")
+    return()
+  endif()
+
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --check
+            ${PATCH_OPTIONS} "${NORMALIZED_PATCH_FILE}"
+    WORKING_DIRECTORY "${WORKING_DIRECTORY}"
+    RESULT_VARIABLE CHECK_RESULT
+    OUTPUT_QUIET
+    ERROR_VARIABLE CHECK_ERROR
+    ERROR_STRIP_TRAILING_WHITESPACE)
+  if(NOT CHECK_RESULT EQUAL 0)
+    message(FATAL_ERROR
+      "${PATCH_NAME} patch cannot be applied cleanly:\n${CHECK_ERROR}")
+  endif()
+
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply
+            ${PATCH_OPTIONS} "${NORMALIZED_PATCH_FILE}"
+    WORKING_DIRECTORY "${WORKING_DIRECTORY}"
+    RESULT_VARIABLE APPLY_RESULT
+    OUTPUT_QUIET
+    ERROR_VARIABLE APPLY_ERROR
+    ERROR_STRIP_TRAILING_WHITESPACE)
+  if(NOT APPLY_RESULT EQUAL 0)
+    message(FATAL_ERROR
+      "Failed to apply ${PATCH_NAME} patch:\n${APPLY_ERROR}")
+  endif()
+  message(STATUS "Applied ${PATCH_NAME} patch")
+endfunction()
+
 # Run `EXPR` in python after importing `PKG`. Use the result of this to extend
 # `CMAKE_PREFIX_PATH` so the torch cmake configuration can be imported.
 macro (append_cmake_prefix_path PKG EXPR)
