@@ -1,0 +1,15 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 88c334b..acc180f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -140,2 +140,10 @@ if (FA2_ENABLED)
+         cuda_archs_loose_intersection(FA2_ARCHS "8.0+PTX" "${CUDA_ARCHS}")
++        if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
++            if("10.0" IN_LIST CUDA_ARCHS)
++                list(APPEND FA2_ARCHS "10.0f")
++            endif()
++            if("12.0" IN_LIST CUDA_ARCHS)
++                list(APPEND FA2_ARCHS "12.0f")
++            endif()
++        endif()
+         message(STATUS "FA2_ARCHS: ${FA2_ARCHS}")

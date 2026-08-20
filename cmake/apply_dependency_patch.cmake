@@ -1,0 +1,21 @@
+foreach(REQUIRED_VAR
+        VLLM_SOURCE_DIR PATCH_NAME PATCH_WORKING_DIRECTORY PATCH_FILE
+        PATCH_BINARY_DIR)
+  if(NOT DEFINED ${REQUIRED_VAR})
+    message(FATAL_ERROR "${REQUIRED_VAR} is required")
+  endif()
+endforeach()
+
+set(CMAKE_BINARY_DIR "${PATCH_BINARY_DIR}")
+include("${VLLM_SOURCE_DIR}/cmake/utils.cmake")
+
+set(PATCH_OPTIONS)
+if(PATCH_UNIDIFF_ZERO)
+  list(APPEND PATCH_OPTIONS UNIDIFF_ZERO)
+endif()
+
+vllm_apply_patch(
+  "${PATCH_NAME}"
+  "${PATCH_WORKING_DIRECTORY}"
+  "${PATCH_FILE}"
+  ${PATCH_OPTIONS})
