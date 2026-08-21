@@ -10,7 +10,7 @@ param(
     [string]$CMakeCudaArchitectures = "120f;103a",
     [ValidateRange(1, 256)]
     [int]$MaxJobs = 8,
-    [string]$VersionOverride = "0.25.0+cu134",
+    [string]$VersionOverride = "0.26.0+cu134",
     [switch]$SkipBuild
 )
 
