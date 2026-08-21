@@ -14,6 +14,19 @@ param(
     [switch]$SkipBuild
 )
 
+# This script expects VenvDir to be provisioned already. Install the local
+# Windows ARM64 Torch wheel built for CUDA 13.4 separately; no compatible public
+# PyPI Torch wheel is assumed. The remaining PyPI build packages are:
+# cmake>=3.26.1, ninja, packaging>=24.2, setuptools>=77.0.3,<81.0.0,
+# setuptools-scm>=8, setuptools-rust>=1.9.0, wheel, jinja2>=3.1.6, regex,
+# build, and protobuf.
+#
+# Example:
+# uv pip install --python "<venv>\Scripts\python.exe" `
+#   "cmake>=3.26.1" ninja "packaging>=24.2" `
+#   "setuptools>=77.0.3,<81.0.0" "setuptools-scm>=8" `
+#   "setuptools-rust>=1.9.0" wheel "jinja2>=3.1.6" regex build protobuf
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
