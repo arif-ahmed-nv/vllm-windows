@@ -253,9 +253,12 @@ function Set-BuildEnvironment {
     $env:MAX_JOBS = $MaxJobs.ToString()
     $env:NVCC_THREADS = "1"
     $env:CMAKE_BUILD_PARALLEL_LEVEL = $MaxJobs.ToString()
+    $pythonPath = $python.Replace("\", "/")
     $env:CMAKE_ARGS = (
         "-DCMAKE_SYSTEM_PROCESSOR=ARM64 " +
-        "-DCMAKE_CUDA_ARCHITECTURES=$CMakeCudaArchitectures"
+        "-DCMAKE_CUDA_ARCHITECTURES=$CMakeCudaArchitectures " +
+        "-DPYTHON_EXECUTABLE=$pythonPath " +
+        "-DPython3_EXECUTABLE=$pythonPath"
     )
     $env:VLLM_DISABLE_FA3_BUILD = "1"
     $env:VLLM_REQUIRE_RUST_FRONTEND = "0"
@@ -311,6 +314,8 @@ function Invoke-ConfigureOnly {
         "-DVLLM_TARGET_DEVICE=cuda",
         "-DVLLM_PYTHON_EXECUTABLE=$pythonPath",
         "-DVLLM_PYTHON_PATH=$pythonSearchPath",
+        "-DPYTHON_EXECUTABLE=$pythonPath",
+        "-DPython3_EXECUTABLE=$pythonPath",
         "-DFETCHCONTENT_BASE_DIR:PATH=$($RepoRoot.Replace('\', '/'))/.deps",
         "-DNVCC_THREADS=1",
         "-DCMAKE_JOB_POOL_COMPILE:STRING=compile",
@@ -388,7 +393,8 @@ if ($SkipBuild) {
 New-Item -ItemType Directory -Force $WheelDir | Out-Null
 Push-Location $RepoRoot
 try {
-    & $tools.Python -m build --wheel --no-isolation --outdir $WheelDir
+    & $tools.Python -m build --wheel --no-isolation `
+        --skip-dependency-check --outdir $WheelDir
     if ($LASTEXITCODE -ne 0) {
         throw "Wheel build failed."
     }

@@ -1,3 +1,29 @@
+diff --git a/csrc/api/dense_decode.h b/csrc/api/dense_decode.h
+index d52ea8c..b69bb9b 100644
+--- a/csrc/api/dense_decode.h
++++ b/csrc/api/dense_decode.h
+@@ -147,7 +147,8 @@ dense_attn_decode_interface(
+     params.d = head_size_k;
+     params.d_v = head_size_v;
+     params.scale_softmax = softmax_scale;
+-    params.scale_softmax_log2 = float(softmax_scale * M_LOG2E);
++    constexpr double kLog2E = 1.4426950408889634074;
++    params.scale_softmax_log2 = float(softmax_scale * kLog2E);
+     // Set the pointers and strides.
+     params.q_ptr = q.data_ptr();
+     params.k_ptr = kcache.data_ptr();
+diff --git a/csrc/extension/sm90/dense_fp8/pybind.cpp b/csrc/extension/sm90/dense_fp8/pybind.cpp
+index a1a8830..2781c95 100644
+--- a/csrc/extension/sm90/dense_fp8/pybind.cpp
++++ b/csrc/extension/sm90/dense_fp8/pybind.cpp
+@@ -139,5 +139,6 @@ fwd_kvcache_mla_fp8(
+     params.d = head_size_k;
+     params.d_v = head_size_v;
+     params.scale_softmax = softmax_scale;
+-    params.scale_softmax_log2 = float(softmax_scale * M_LOG2E);
++    constexpr double kLog2E = 1.4426950408889634074;
++    params.scale_softmax_log2 = float(softmax_scale * kLog2E);
+     params.topk = -1; // Dense attention
 diff --git a/csrc/extension/sm90/dense_fp8/softmax.h b/csrc/extension/sm90/dense_fp8/softmax.h
 index 1d6d553..48f55f6 100644
 --- a/csrc/extension/sm90/dense_fp8/softmax.h

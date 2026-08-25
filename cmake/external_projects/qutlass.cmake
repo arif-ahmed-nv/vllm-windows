@@ -192,6 +192,12 @@ if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8 AND QUTLASS_ARCHS)
       USE_CUDA)
   endif()
 
+  if(MSVC)
+    target_compile_options(_qutlass_C PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:/bigobj>
+      $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/bigobj>)
+  endif()
+
   set_property(SOURCE ${QUTLASS_SOURCES} APPEND PROPERTY COMPILE_OPTIONS
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr --use_fast_math -O3>
   )
