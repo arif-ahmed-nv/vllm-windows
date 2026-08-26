@@ -35,10 +35,18 @@ def load_module_from_path(module_name, path):
 ROOT_DIR = Path(__file__).parent
 logger = logging.getLogger(__name__)
 
-PRECOMPILED_RUST_FRONTEND_PATH = ROOT_DIR / "vllm" / "vllm-rs"
+RUST_FRONTEND_FILENAME = (
+    "vllm-rs.exe" if sys.platform.startswith("win") else "vllm-rs"
+)
+PRECOMPILED_RUST_FRONTEND_PATH = ROOT_DIR / "vllm" / RUST_FRONTEND_FILENAME
 # setuptools-rust installs PyO3 artifacts as `<module>.<ext-suffix>`, where the
-# suffix ends with `.so` on Linux and macOS alike (e.g. `_rust_foo.abi3.so`).
-PRECOMPILED_RUST_EXTENSION_MEMBER_REGEX = re.compile(r"vllm/_rust_[^/]*\.so$")
+# suffix ends with `.so` on Linux/macOS and `.pyd` on Windows.
+PRECOMPILED_RUST_EXTENSION_MEMBER_REGEX = re.compile(
+    r"vllm/_rust_[^/]*\.(?:so|pyd)$"
+)
+PRECOMPILED_WINDOWS_EXTENSION_MEMBER_REGEX = re.compile(
+    r"vllm/(?:[^/]+/)*[^/]+\.pyd$"
+)
 
 # cannot import envs directly because it depends on vllm,
 #  which is not installed yet
@@ -61,7 +69,11 @@ def should_require_rust_frontend() -> bool:
 
 
 def get_precompiled_rust_extension_paths() -> list[Path]:
-    return sorted((ROOT_DIR / "vllm").glob("_rust_*.so"))
+    return sorted(
+        path
+        for pattern in ("_rust_*.so", "_rust_*.pyd")
+        for path in (ROOT_DIR / "vllm").glob(pattern)
+    )
 
 
 def get_missing_precompiled_rust_extension_modules() -> list[str]:
@@ -846,7 +858,7 @@ class precompiled_wheel_utils:
                         }
                     )
                 if extract_rust_frontend:
-                    exact_members.add("vllm/vllm-rs")
+                    exact_members.add(f"vllm/{RUST_FRONTEND_FILENAME}")
 
                 flash_attn_regex = re.compile(
                     r"vllm/vllm_flash_attn/(?:[^/.][^/]*/)*(?!\.)[^/]*\.py"
@@ -870,6 +882,14 @@ class precompiled_wheel_utils:
                 file_members = []
                 for member in wheel.filelist:
                     if member.filename in exact_members:
+                        file_members.append(member)
+                        continue
+                    if (
+                        extract_extensions
+                        and PRECOMPILED_WINDOWS_EXTENSION_MEMBER_REGEX.match(
+                            member.filename
+                        )
+                    ):
                         file_members.append(member)
                         continue
                     if (
@@ -1286,7 +1306,7 @@ if USE_PRECOMPILED_RUST_FRONTEND:
 # If the rust frontend binary is already present in the source tree (e.g.,
 # pre-built in a separate Docker build stage), ship it as-is.
 if PRECOMPILED_RUST_FRONTEND_PATH.exists():
-    add_vllm_package_data("vllm-rs")
+    add_vllm_package_data(RUST_FRONTEND_FILENAME)
 for rust_extension_path in get_precompiled_rust_extension_paths():
     add_vllm_package_data(rust_extension_path.name)
 
