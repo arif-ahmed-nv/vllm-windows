@@ -572,7 +572,8 @@ def _resolve_rust_frontend_path() -> str | None:
 
     if raw.lower() in ("auto", "1", "true"):
         pkg_dir = os.path.dirname(os.path.abspath(__file__))
-        candidate = os.path.join(pkg_dir, "vllm-rs")
+        filename = "vllm-rs.exe" if sys.platform.startswith("win") else "vllm-rs"
+        candidate = os.path.join(pkg_dir, filename)
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
 
