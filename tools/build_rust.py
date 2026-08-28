@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -13,9 +14,29 @@ from setuptools import setup
 from setuptools_rust import Binding, RustExtension
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+RUST_BUILD_ENV_FILE = "VLLM_RUST_BUILD_ENV_FILE"
+
+
+def rust_build_environment() -> dict[str, str] | None:
+    """Load compiler overrides prepared by the Windows build script."""
+    environment_path = os.environ.get(RUST_BUILD_ENV_FILE)
+    if environment_path is None:
+        return None
+
+    overrides = json.loads(Path(environment_path).read_text(encoding="utf-8"))
+    if not isinstance(overrides, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in overrides.items()
+    ):
+        raise ValueError(f"{RUST_BUILD_ENV_FILE} must contain a string mapping")
+
+    environment = os.environ.copy()
+    environment.update(overrides)
+    return environment
 
 
 def rust_extensions(*, optional: bool = False) -> list[RustExtension]:
+    environment = rust_build_environment()
     return [
         RustExtension(
             target="vllm.vllm-rs",
@@ -24,6 +45,7 @@ def rust_extensions(*, optional: bool = False) -> list[RustExtension]:
             features=["native-tls-vendored"],
             binding=Binding.Exec,
             optional=optional,
+            env=environment,
         ),
         RustExtension(
             target="vllm._rust_tool_parser",
@@ -32,6 +54,7 @@ def rust_extensions(*, optional: bool = False) -> list[RustExtension]:
             binding=Binding.PyO3,
             optional=optional,
             py_limited_api=True,
+            env=environment,
         ),
     ]
 
