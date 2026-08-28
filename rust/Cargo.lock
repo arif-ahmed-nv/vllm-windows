@@ -5658,6 +5658,7 @@ dependencies = [
  "libc",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5763,6 +5764,7 @@ dependencies = [
  "vllm-metrics",
  "vllm-text",
  "vllm-tokenizer",
+ "windows-sys 0.61.2",
  "zeromq",
 ]
 

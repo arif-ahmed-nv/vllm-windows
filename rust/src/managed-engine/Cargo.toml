@@ -11,6 +11,9 @@ libc.workspace = true
 tokio = { workspace = true, features = ["process"] }
 tracing.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Console"] }
+
 [dev-dependencies]
 expect-test.workspace = true
 

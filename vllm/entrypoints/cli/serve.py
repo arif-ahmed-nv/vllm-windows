@@ -202,7 +202,7 @@ def run_headless(args: argparse.Namespace):
 
     shutdown_requested = False
 
-    # Catch SIGTERM and SIGINT to allow graceful shutdown.
+    # Catch termination signals to allow graceful shutdown.
     def signal_handler(signum, frame):
         nonlocal shutdown_requested
         logger.debug("Received %d signal.", signum)
@@ -212,6 +212,8 @@ def run_headless(args: argparse.Namespace):
 
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
+    if platform.system() == "Windows":
+        signal.signal(signal.SIGBREAK, signal_handler)
 
     if parallel_config.node_rank_within_dp > 0:
         from vllm.version import __version__ as VLLM_VERSION
@@ -280,7 +282,7 @@ def run_multi_api_server(args: argparse.Namespace):
 
     shutdown_requested = False
 
-    # Catch SIGTERM and SIGINT to allow graceful shutdown.
+    # Catch termination signals to allow graceful shutdown.
     def signal_handler(signum, frame):
         nonlocal shutdown_requested
         logger.debug("Received %d signal.", signum)
@@ -290,6 +292,8 @@ def run_multi_api_server(args: argparse.Namespace):
 
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
+    if platform.system() == "Windows":
+        signal.signal(signal.SIGBREAK, signal_handler)
 
     listen_address, sock = setup_server(args, reuse_port=num_api_servers > 1)
 

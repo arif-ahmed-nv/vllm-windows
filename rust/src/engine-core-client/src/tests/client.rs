@@ -2410,7 +2410,15 @@ async fn reset_prefix_cache_returns_false_when_any_engine_fails() {
 fn python_msgpack_fixtures_match_rust_encoding() {
     init_tracing();
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/tests/python_compat.py");
-    let output = Command::new(&script)
+    let mut command = if cfg!(windows) {
+        let python = std::env::var_os("PYTHON_SYS_EXECUTABLE").unwrap_or_else(|| "python".into());
+        let mut command = Command::new(python);
+        command.arg(&script);
+        command
+    } else {
+        Command::new(&script)
+    };
+    let output = command
         .output()
         .unwrap_or_else(|error| panic!("failed to execute {:?}: {error}", script));
     assert!(

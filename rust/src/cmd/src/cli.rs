@@ -363,7 +363,7 @@ impl SharedRuntimeArgs {
     /// inherits an already open HTTP listener from the supervisor process.
     fn into_bootstrapped_config(
         self,
-        listen_fd: i32,
+        listen_fd: u64,
         input_address: String,
         output_address: String,
         coordinator_address: Option<String>,
@@ -547,10 +547,10 @@ fn parse_runtime_args_json(value: &str) -> Result<SharedRuntimeArgs, String> {
 #[derive(Educe, Clone, Args, PartialEq, Eq)]
 #[educe(Debug)]
 pub struct FrontendArgs {
-    /// Inherited listening socket file descriptor passed by the Python
+    /// Inherited listener descriptor or socket handle passed by the Python
     /// supervisor.
     #[arg(long)]
-    pub listen_fd: i32,
+    pub listen_fd: u64,
     /// Frontend input ROUTER socket address that the Python engines will
     /// connect to.
     #[arg(long)]

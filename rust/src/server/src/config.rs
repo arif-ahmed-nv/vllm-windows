@@ -24,9 +24,9 @@ pub enum HttpListenerMode {
     BindTcp { host: String, port: u16 },
     /// Bind a fresh Unix domain listener on the given filesystem path.
     BindUnix { path: String },
-    /// Adopt an already-open listening socket inherited from a supervisor
-    /// process.
-    InheritedFd { fd: i32 },
+    /// Adopt an already-open listener descriptor or socket handle inherited
+    /// from a supervisor process.
+    InheritedFd { fd: u64 },
 }
 
 /// Which coordinator implementation should be active when one is present for a

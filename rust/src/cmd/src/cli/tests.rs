@@ -725,7 +725,7 @@ fn frontend_args_accept_json() {
         "vllm-rs",
         "frontend",
         "--listen-fd",
-        "3",
+        "4294967296",
         "--input-address",
         "ipc:///tmp/input.sock",
         "--output-address",
@@ -741,7 +741,7 @@ fn frontend_args_accept_json() {
         Cli {
             command: Frontend(
                 FrontendArgs {
-                    listen_fd: 3,
+                    listen_fd: 4294967296,
                     input_address: "ipc:///tmp/input.sock",
                     output_address: "ipc:///tmp/output.sock",
                     coordinator_address: Some(

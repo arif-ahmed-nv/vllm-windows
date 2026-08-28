@@ -9,18 +9,18 @@
 
 use std::io::Result;
 use std::net::SocketAddr;
-#[cfg(unix)]
 use std::net::TcpListener as StdTcpListener;
 #[cfg(unix)]
 use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
 #[cfg(unix)]
 use std::os::unix::net::UnixListener as StdUnixListener;
+#[cfg(windows)]
+use std::os::windows::io::{FromRawSocket, IntoRawSocket};
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 
 use auto_enums::enum_derive;
 use openssl::ssl::SslContext;
-#[cfg(unix)]
 use socket2::Socket;
 use tls_listener::{AsyncAccept, AsyncListener};
 use tokio::net::{TcpListener, TcpStream};
@@ -28,6 +28,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::net::{UnixListener, UnixStream};
 use tonic::transport::server::{Connected, TcpConnectInfo};
 use tracing::trace;
+#[cfg(windows)]
+use windows_sys::Win32::Networking::WinSock::SOMAXCONN;
 
 use crate::{HttpListenerMode, tls};
 
@@ -94,7 +96,11 @@ impl Listener {
                 {
                     Self::from_inherited_fd(*fd)
                 }
-                #[cfg(not(unix))]
+                #[cfg(windows)]
+                {
+                    Self::from_inherited_socket(*fd)
+                }
+                #[cfg(not(any(unix, windows)))]
                 {
                     let _ = fd;
                     Err(std::io::Error::new(
@@ -120,7 +126,13 @@ impl Listener {
     }
 
     #[cfg(unix)]
-    fn from_inherited_fd(fd: i32) -> Result<Self> {
+    fn from_inherited_fd(fd: u64) -> Result<Self> {
+        let fd = i32::try_from(fd).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "inherited file descriptor is out of range",
+            )
+        })?;
         // SAFETY: We trust the caller to only pass valid listener fds, and we only use
         // this fd once to create a single listener.
         let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
@@ -139,6 +151,24 @@ impl Listener {
             let std_listener = unsafe { StdTcpListener::from_raw_fd(socket.into_raw_fd()) };
             Ok(Self::Tcp(TcpListener::from_std(std_listener)?))
         }
+    }
+
+    #[cfg(windows)]
+    fn from_inherited_socket(socket: u64) -> Result<Self> {
+        // SAFETY: The Python supervisor explicitly inherits this socket into the child,
+        // which transfers ownership of the child process's handle to this listener.
+        let socket = unsafe { Socket::from_raw_socket(socket) };
+        if socket.local_addr()?.as_socket().is_none() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "only inherited TCP listeners are supported on Windows",
+            ));
+        }
+        socket.listen(SOMAXCONN.try_into().expect("SOMAXCONN must fit in c_int"))?;
+        socket.set_nonblocking(true)?;
+
+        let std_listener = unsafe { StdTcpListener::from_raw_socket(socket.into_raw_socket()) };
+        Ok(Self::Tcp(TcpListener::from_std(std_listener)?))
     }
 
     fn local_addr(&self) -> Result<ListenerAddr> {
@@ -339,7 +369,11 @@ mod tests {
         socket.bind(&SockAddr::from(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))).unwrap();
         let fd = socket.into_raw_fd();
 
-        let listener = Listener::bind(&HttpListenerMode::InheritedFd { fd }).await.unwrap();
+        let listener = Listener::bind(&HttpListenerMode::InheritedFd {
+            fd: fd.try_into().unwrap(),
+        })
+        .await
+        .unwrap();
 
         assert!(matches!(listener, Listener::Tcp(_)));
     }
@@ -351,9 +385,35 @@ mod tests {
         socket.bind(&SockAddr::unix(&path).unwrap()).unwrap();
         let fd = socket.into_raw_fd();
 
-        let listener = Listener::bind(&HttpListenerMode::InheritedFd { fd }).await.unwrap();
+        let listener = Listener::bind(&HttpListenerMode::InheritedFd {
+            fd: fd.try_into().unwrap(),
+        })
+        .await
+        .unwrap();
 
         assert!(matches!(listener, Listener::Unix(_)));
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::net::{Ipv4Addr, SocketAddrV4};
+    use std::os::windows::io::IntoRawSocket;
+
+    use socket2::{Domain, SockAddr, Socket, Type};
+
+    use super::Listener;
+    use crate::HttpListenerMode;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn inherited_socket_adopts_tcp_listener() {
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+        socket.bind(&SockAddr::from(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let socket = socket.into_raw_socket();
+
+        let listener = Listener::bind(&HttpListenerMode::InheritedFd { fd: socket }).await.unwrap();
+
+        assert!(matches!(listener, Listener::Tcp(_)));
     }
 }

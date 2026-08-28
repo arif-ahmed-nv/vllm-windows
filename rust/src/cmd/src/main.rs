@@ -194,7 +194,7 @@ async fn async_main(cli: Cli) -> Result<()> {
 
             // Shutdown begins. Terminate the managed engine first.
             engine.shutdown(shutdown_timeout).await?;
-            info!("managed engine shut down gracefully");
+            info!("managed engine shut down");
             // Wait for the API server to shut down gracefully by draining in-flight
             // requests.
             if !matches!(shutdown_reason, ShutdownReason::Server(_)) {
