@@ -48,7 +48,8 @@ fn runtime_lora_allowed_path_prefixes() -> Option<Vec<PathBuf>> {
 
 fn looks_like_local_lora_path(lora_path: &str) -> bool {
     let path = Path::new(lora_path);
-    path.is_absolute()
+    path.has_root()
+        || matches!(path.components().next(), Some(Component::Prefix(_)))
         || lora_path.starts_with('~')
         || lora_path.starts_with('.')
         || path.components().any(|component| matches!(component, Component::ParentDir))
@@ -238,6 +239,15 @@ mod tests {
         assert!(validate_lora_path_access("./adapter-a", None).is_err());
         assert!(validate_lora_path_access("~/adapter-a", None).is_err());
         assert!(validate_lora_path_access("subdir/../../../etc/sensitive", None).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lora_path_rejects_windows_local_paths_without_prefixes() {
+        assert!(validate_lora_path_access(r"C:\models\adapter-a", None).is_err());
+        assert!(validate_lora_path_access(r"C:models\adapter-a", None).is_err());
+        assert!(validate_lora_path_access(r"\models\adapter-a", None).is_err());
+        assert!(validate_lora_path_access(r"\\server\share\adapter-a", None).is_err());
     }
 
     #[test]
