@@ -7,10 +7,13 @@ param(
     [string]$MsvcToolsetVersion = "14.51.36231",
     [string]$WindowsSdkVersion = "10.0.26100.0",
     [string]$CudaArchList = "12.0+PTX;10.3a",
-    [string]$CMakeCudaArchitectures = "120f;103a",
+    [string]$CMakeCudaArchitectures = "120-real;103-real",
     [ValidateRange(1, 256)]
     [int]$MaxJobs = 8,
     [string]$VersionOverride = "0.26.0+cu134",
+    [string]$PerlPath = "",
+    [string]$ProtocPath = "",
+    [switch]$SkipRustFrontend,
     [switch]$SkipBuild
 )
 
@@ -19,7 +22,8 @@ param(
 # PyPI Torch wheel is assumed. The remaining PyPI build packages are:
 # cmake>=3.26.1, ninja, packaging>=24.2, setuptools>=77.0.3,<81.0.0,
 # setuptools-scm>=8, setuptools-rust>=1.9.0, wheel, jinja2>=3.1.6, regex,
-# build, and protobuf.
+# build, protobuf, Rust 1.95+, and a full Perl distribution for vendored
+# OpenSSL. Pass -PerlPath and -ProtocPath when they are not discoverable.
 #
 # Example:
 # uv pip install --python "<venv>\Scripts\python.exe" `
@@ -120,6 +124,60 @@ function Import-Arm64MsvcEnvironment {
     return $cl.Source
 }
 
+function Initialize-RustBuildEnvironment {
+    if ($SkipBuild -or $SkipRustFrontend) {
+        $env:VLLM_REQUIRE_RUST_FRONTEND = "0"
+        return
+    }
+
+    $cargo = Get-Command cargo.exe -ErrorAction SilentlyContinue
+    if (-not $cargo) {
+        throw "cargo.exe is required to build the Rust frontend."
+    }
+
+    $resolvedPerl = $PerlPath
+    if (-not $resolvedPerl) {
+        $perl = Get-Command perl.exe -ErrorAction SilentlyContinue
+        if ($perl) {
+            $resolvedPerl = $perl.Source
+        }
+    }
+    if (-not $resolvedPerl -or -not (Test-Path -LiteralPath $resolvedPerl -PathType Leaf)) {
+        throw "A full perl.exe is required for vendored OpenSSL. Pass -PerlPath."
+    }
+    & $resolvedPerl -MLocale::Maketext::Simple -MIPC::Cmd -e "exit 0"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Perl is missing modules required by the vendored OpenSSL build."
+    }
+
+    $resolvedProtoc = $ProtocPath
+    if (-not $resolvedProtoc) {
+        $protocCandidates = @(
+            (Join-Path $VenvDir "Library\bin\protoc.exe"),
+            (Join-Path $VenvDir "Lib\site-packages\torch\bin\protoc.exe")
+        )
+        $resolvedProtoc = $protocCandidates |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+    }
+    if (-not $resolvedProtoc) {
+        $protoc = Get-Command protoc.exe -ErrorAction SilentlyContinue
+        if ($protoc) {
+            $resolvedProtoc = $protoc.Source
+        }
+    }
+    if (-not $resolvedProtoc -or -not (Test-Path -LiteralPath $resolvedProtoc -PathType Leaf)) {
+        throw "protoc.exe is required for the Rust frontend. Pass -ProtocPath."
+    }
+
+    $env:PATH = (
+        (Split-Path -Parent $resolvedPerl),
+        $env:PATH
+    ) -join [IO.Path]::PathSeparator
+    $env:PROTOC = (Resolve-Path -LiteralPath $resolvedProtoc).Path
+    $env:VLLM_REQUIRE_RUST_FRONTEND = "1"
+}
+
 function Initialize-CudaIncludeOverlay {
     $cudaHeader = Join-Path $CudaPath "include\cuda.h"
     $overlayHeader = Join-Path $CudaOverlay "cuda.h"
@@ -168,6 +226,21 @@ $tensorMapStruct
     $env:VLLM_CUDA_INCLUDE_OVERLAY = $CudaOverlay
 }
 
+function Resolve-VenvTool {
+    param(
+        [string]$Name,
+        [string[]]$RelativePaths
+    )
+
+    foreach ($relativePath in $RelativePaths) {
+        $candidate = Join-Path $VenvDir $relativePath
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+    throw "Required build tool is missing from ${VenvDir}: $Name"
+}
+
 function Set-BuildEnvironment {
     if (
         [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne
@@ -180,14 +253,18 @@ function Set-BuildEnvironment {
     }
 
     $script:CudaPath = (Resolve-Path -LiteralPath $CudaPath).Path
-    $python = Join-Path $VenvDir "Scripts\python.exe"
-    $cmake = Join-Path $VenvDir "Scripts\cmake.exe"
-    $ninja = Join-Path $VenvDir "Scripts\ninja.exe"
-    foreach ($path in @($python, $cmake, $ninja)) {
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            throw "Required build tool is missing: $path"
-        }
-    }
+    $python = Resolve-VenvTool "python.exe" @(
+        "Scripts\python.exe",
+        "python.exe"
+    )
+    $cmake = Resolve-VenvTool "cmake.exe" @(
+        "Scripts\cmake.exe",
+        "Library\bin\cmake.exe"
+    )
+    $ninja = Resolve-VenvTool "ninja.exe" @(
+        "Scripts\ninja.exe",
+        "Library\bin\ninja.exe"
+    )
 
     $cl = Import-Arm64MsvcEnvironment
     $vsToolsetRoot = Split-Path -Parent (
@@ -261,9 +338,10 @@ function Set-BuildEnvironment {
         "-DPython3_EXECUTABLE=$pythonPath"
     )
     $env:VLLM_DISABLE_FA3_BUILD = "1"
-    $env:VLLM_REQUIRE_RUST_FRONTEND = "0"
     $env:VLLM_DISABLE_SCCACHE = "1"
     $env:VLLM_VERSION_OVERRIDE = $VersionOverride
+
+    Initialize-RustBuildEnvironment
 
     Initialize-CudaIncludeOverlay
 
