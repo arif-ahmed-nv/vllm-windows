@@ -849,14 +849,20 @@ The following parameters only apply to the `torchcodec` backend:
   frame-accurate sampling by scanning the file when the decoder is created.
   `"approximate"` skips that scan for faster decoder creation, at the cost of
   relying on the file's metadata (which may yield less accurate seeking).
+- `torchcodec_device`: Device used for decoding. The default uses CPU decoding;
+  `"cuda"` uses NVDEC when TorchCodec was built with CUDA support. CUDA-decoded
+  frames are copied to host memory before multimodal preprocessing.
 
 ```bash
 # Example: TorchCodec with approximate seek mode and 4 FFmpeg threads
 vllm serve Qwen/Qwen3-VL-30B-A3B-Instruct \
-  --media-io-kwargs '{"video": {"backend": "torchcodec", "seek_mode": "approximate", "num_ffmpeg_threads": 4}}'
+  --media-io-kwargs '{"video": {"backend": "torchcodec", "torchcodec_device": "cuda", "seek_mode": "approximate", "num_ffmpeg_threads": 4}}'
 ```
 
 **PyNvVideoCodec-specific parameters:**
+
+PyNvVideoCodec 2.2.2 and later decode request bytes directly. Older versions
+remain supported through a temporary-file compatibility path.
 
 - `hw_decoders`: Maximum number of concurrent hardware decoder slots retained
   by each API server process. It must be a positive integer and defaults to `2`,

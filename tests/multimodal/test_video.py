@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import builtins
+import importlib
 import itertools
 import sys
 import threading
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import numpy.typing as npt
@@ -14,6 +17,7 @@ from transformers import AutoVideoProcessor
 from transformers.video_utils import VideoMetadata
 
 from vllm.assets.base import get_vllm_public_assets
+from vllm.multimodal import video as video_module
 from vllm.multimodal.video import (
     PYNVVIDEOCODEC_DECODER_CACHE_SIZE,
     PYNVVIDEOCODEC_VIDEO_BACKEND,
@@ -75,11 +79,84 @@ def test_video_loader_type_doesnt_exist():
         VIDEO_LOADER_REGISTRY.load("non_existing_video_loader")
 
 
+def test_torchcodec_loader_treats_oserror_as_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    module_name = video_module.__name__
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "torchcodec.decoders":
+            raise OSError("missing torchcodec DLL")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    original_module = sys.modules.pop(module_name)
+
+    try:
+        imported = importlib.import_module(module_name)
+        assert imported.VideoDecoder is not None
+    finally:
+        sys.modules[module_name] = original_module
+        sys.modules["vllm.multimodal"].video = original_module
+
+
+def test_pynvvideocodec_backend_uses_in_memory_source(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    observed_sources: list[str | bytes] = []
+    observed_keys: list[object] = []
+
+    class FakeNvc:
+        __version__ = "2.2.2"
+
+    def fake_metadata(cls, source: str | bytes, source_key: object, nvc):
+        observed_sources.append(source)
+        observed_keys.append(source_key)
+        return SimpleNamespace(
+            width=10,
+            height=20,
+            source=VideoSourceMetadata(
+                total_frames_num=4,
+                original_fps=2.0,
+                duration=2.0,
+            ),
+        )
+
+    def fake_decode(
+        cls, source: str | bytes, source_key: object, frame_idx: list[int], nvc
+    ):
+        observed_sources.append(source)
+        observed_keys.append(source_key)
+        return np.zeros((len(frame_idx), 20, 10, 3), dtype=np.uint8)
+
+    monkeypatch.setitem(sys.modules, "PyNvVideoCodec", FakeNvc)
+    monkeypatch.setattr(
+        PyNvVideoCodecVideoBackend, "_read_source_metadata", classmethod(fake_metadata)
+    )
+    monkeypatch.setattr(
+        PyNvVideoCodecVideoBackend, "_decode_to_pinned_host", classmethod(fake_decode)
+    )
+    monkeypatch.setattr(
+        "vllm.multimodal.gpu_ipc_memory.get_mm_gpu_ipc_pool", lambda: None
+    )
+
+    target = VideoTargetMetadata(num_frames=2, fps=-1, max_duration=300)
+    frames, _, _, _ = PyNvVideoCodecVideoBackend.decode_frames_pynvvideocodec(
+        b"in-memory video", target
+    )
+
+    assert frames.shape == (2, 20, 10, 3)
+    assert observed_sources == [b"in-memory video", b"in-memory video"]
+    assert observed_keys[0] is observed_keys[1]
+
+
 @pytest.mark.skipif(not current_platform.is_cuda(), reason="Requires CUDA")
 def test_pynvvideocodec_backend_accounts_raw_decoded_frames(
     monkeypatch: pytest.MonkeyPatch,
 ):
     decoder_cache_sizes = []
+    decoder_sources = []
 
     class FakeMetadata:
         width = 10
@@ -89,6 +166,7 @@ def test_pynvvideocodec_backend_accounts_raw_decoded_frames(
 
     class FakeDecoder:
         def __init__(self, *args, **kwargs):
+            decoder_sources.append(args[0])
             decoder_cache_sizes.append(kwargs["decoder_cache_size"])
 
         def __len__(self):
@@ -98,6 +176,8 @@ def test_pynvvideocodec_backend_accounts_raw_decoded_frames(
             return FakeMetadata()
 
     class FakeNvc:
+        __version__ = "2.2.2"
+
         class OutputColorType:
             RGB = "rgb"
 
@@ -112,7 +192,9 @@ def test_pynvvideocodec_backend_accounts_raw_decoded_frames(
             self.acquired.append(size)
             yield
 
-    def fake_decode(cls, file_path: str, frame_idx: list[int], nvc):
+    def fake_decode(
+        cls, source: str | bytes, source_key: object, frame_idx: list[int], nvc
+    ):
         return np.zeros((len(frame_idx), 20, 10, 3), dtype=np.uint8)
 
     pool = RecordingPool()
@@ -128,10 +210,68 @@ def test_pynvvideocodec_backend_accounts_raw_decoded_frames(
     frames, metadata = loader.load_bytes(b"fake video", num_frames=4)
 
     assert frames.shape == (4, 20, 10, 3)
+    assert decoder_sources == [b"fake video"]
     assert pool.acquired == [4 * 20 * 10 * 3]
     assert decoder_cache_sizes == [PYNVVIDEOCODEC_DECODER_CACHE_SIZE]
     assert metadata["video_backend"] == PYNVVIDEOCODEC_VIDEO_BACKEND
     assert metadata["frames_indices"] == [0, 3, 6, 9]
+
+
+@pytest.mark.parametrize("version", ["2.2.1", "invalid-version"])
+def test_pynvvideocodec_backend_keeps_old_version_tempfile_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    version: str,
+):
+    observed_paths: list[Path] = []
+    observed_keys: list[object] = []
+
+    class FakeNvc:
+        __version__ = version
+
+    def fake_metadata(cls, source: str | bytes, source_key: object, nvc):
+        assert isinstance(source, str)
+        observed_keys.append(source_key)
+        source_path = Path(source)
+        assert source_path.read_bytes() == b"legacy video"
+        observed_paths.append(source_path)
+        return SimpleNamespace(
+            width=10,
+            height=20,
+            source=VideoSourceMetadata(
+                total_frames_num=4,
+                original_fps=2.0,
+                duration=2.0,
+            ),
+        )
+
+    def fake_decode(
+        cls, source: str | bytes, source_key: object, frame_idx: list[int], nvc
+    ):
+        assert isinstance(source, str)
+        observed_keys.append(source_key)
+        assert Path(source).exists()
+        return np.zeros((len(frame_idx), 20, 10, 3), dtype=np.uint8)
+
+    monkeypatch.setitem(sys.modules, "PyNvVideoCodec", FakeNvc)
+    monkeypatch.setattr(
+        PyNvVideoCodecVideoBackend, "_read_source_metadata", classmethod(fake_metadata)
+    )
+    monkeypatch.setattr(
+        PyNvVideoCodecVideoBackend, "_decode_to_pinned_host", classmethod(fake_decode)
+    )
+    monkeypatch.setattr(
+        "vllm.multimodal.gpu_ipc_memory.get_mm_gpu_ipc_pool", lambda: None
+    )
+
+    target = VideoTargetMetadata(num_frames=2, fps=-1, max_duration=300)
+    frames, _, _, _ = PyNvVideoCodecVideoBackend.decode_frames_pynvvideocodec(
+        b"legacy video", target
+    )
+
+    assert frames.shape == (2, 20, 10, 3)
+    assert observed_keys[0] is observed_keys[1]
+    assert len(observed_paths) == 1
+    assert not observed_paths[0].exists()
 
 
 @pytest.mark.skipif(not current_platform.is_cuda(), reason="Requires CUDA")
@@ -157,6 +297,8 @@ def test_pynvvideocodec_codec_uses_dynamic_sampling_strategy(
             return FakeMetadata()
 
     class FakeNvc:
+        __version__ = "2.2.2"
+
         class OutputColorType:
             RGB = "rgb"
 
@@ -171,7 +313,9 @@ def test_pynvvideocodec_codec_uses_dynamic_sampling_strategy(
             self.acquired.append(size)
             yield
 
-    def fake_decode(cls, file_path: str, frame_idx: list[int], nvc):
+    def fake_decode(
+        cls, source: str | bytes, source_key: object, frame_idx: list[int], nvc
+    ):
         decoded_indices.append(frame_idx)
         return np.zeros((len(frame_idx), 20, 10, 3), dtype=np.uint8)
 
@@ -312,9 +456,15 @@ def test_pynvvideocodec_decoder_slot_retains_simple_decoder():
 
     slot = PyNvVideoCodecDecoderSlot(FakeStream())
 
-    decoder = slot.get_decoder("first.mp4", FakeNvc, device_index=7)
-    assert slot.get_decoder("first.mp4", FakeNvc, device_index=7) is decoder
-    assert slot.get_decoder("second.mp4", FakeNvc, device_index=7) is decoder
+    first_key = object()
+    second_key = object()
+    decoder = slot.get_decoder("first.mp4", first_key, FakeNvc, device_index=7)
+    assert (
+        slot.get_decoder("first.mp4", first_key, FakeNvc, device_index=7) is decoder
+    )
+    assert (
+        slot.get_decoder("second.mp4", second_key, FakeNvc, device_index=7) is decoder
+    )
 
     assert events == [
         (
@@ -326,7 +476,7 @@ def test_pynvvideocodec_decoder_slot_retains_simple_decoder():
         ),
         ("reconfigure", "second.mp4"),
     ]
-    assert slot.source_path == "second.mp4"
+    assert slot.source_key is second_key
 
 
 # ============================================================================
@@ -808,6 +958,56 @@ def test_pyav_backend_returns_target_frames_not_keyframes():
 # ============================================================================
 # TorchCodec Backend Tests
 # ============================================================================
+
+
+def test_torchcodec_backend_forwards_decode_device(monkeypatch: pytest.MonkeyPatch):
+    constructor_kwargs: dict[str, object] = {}
+    cpu_calls: list[None] = []
+
+    class FakeTensor:
+        def cpu(self):
+            cpu_calls.append(None)
+            return self
+
+        def numpy(self):
+            return np.zeros((2, 20, 10, 3), dtype=np.uint8)
+
+    class FakeDecoder:
+        metadata = SimpleNamespace(
+            num_frames=4,
+            average_fps=2.0,
+            duration_seconds=2.0,
+            width=10,
+            height=20,
+        )
+
+        def __init__(self, data: bytes, **kwargs):
+            constructor_kwargs.update(kwargs)
+
+        def get_frames_at(self, frame_indices: list[int]):
+            assert frame_indices == [0, 3]
+            return SimpleNamespace(data=FakeTensor())
+
+    monkeypatch.setattr(
+        "vllm.multimodal.video.check_torchcodec_available", lambda: None
+    )
+    monkeypatch.setattr("vllm.multimodal.video.VideoDecoder", FakeDecoder)
+
+    VideoBackend.make_torchcodec_decoder(b"fake video")
+    assert "device" not in constructor_kwargs
+    constructor_kwargs.clear()
+
+    frames, metadata = VideoBackend.load_bytes(
+        b"fake video",
+        num_frames=2,
+        backend="torchcodec",
+        torchcodec_device="cuda",
+    )
+
+    assert frames.shape == (2, 20, 10, 3)
+    assert len(cpu_calls) == 1
+    assert constructor_kwargs["device"] == "cuda"
+    assert metadata["frames_indices"] == [0, 3]
 
 
 def test_torchcodec_backend_loads_frames(
