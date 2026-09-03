@@ -427,7 +427,7 @@ def test_pynvvideocodec_rejects_invalid_hw_decoders(hw_decoders: object):
         )
 
 
-def test_pynvvideocodec_decoder_slot_retains_simple_decoder():
+def test_pynvvideocodec_decoder_slot_reconfigures_file_source():
     events: list[tuple[object, ...]] = []
 
     class FakeStream:
@@ -459,9 +459,7 @@ def test_pynvvideocodec_decoder_slot_retains_simple_decoder():
     first_key = object()
     second_key = object()
     decoder = slot.get_decoder("first.mp4", first_key, FakeNvc, device_index=7)
-    assert (
-        slot.get_decoder("first.mp4", first_key, FakeNvc, device_index=7) is decoder
-    )
+    assert slot.get_decoder("first.mp4", first_key, FakeNvc, device_index=7) is decoder
     assert (
         slot.get_decoder("second.mp4", second_key, FakeNvc, device_index=7) is decoder
     )
@@ -476,6 +474,39 @@ def test_pynvvideocodec_decoder_slot_retains_simple_decoder():
         ),
         ("reconfigure", "second.mp4"),
     ]
+    assert slot.source_key is second_key
+
+
+def test_pynvvideocodec_decoder_slot_reconstructs_in_memory_source():
+    events: list[tuple[object, ...]] = []
+
+    class FakeStream:
+        cuda_stream = "cuda-stream"
+
+    class FakeDecoder:
+        def __init__(self, source: bytes, **kwargs):
+            events.append(("create", source))
+
+        def reconfigure_decoder(self, source: bytes):
+            raise AssertionError("bytes must not be passed to reconfigure_decoder")
+
+    class FakeNvc:
+        class OutputColorType:
+            RGB = "rgb"
+
+        SimpleDecoder = FakeDecoder
+
+    slot = PyNvVideoCodecDecoderSlot(FakeStream())
+
+    first_key = object()
+    second_key = object()
+    first_decoder = slot.get_decoder(b"first", first_key, FakeNvc, device_index=7)
+    reused_decoder = slot.get_decoder(b"first", first_key, FakeNvc, device_index=7)
+    second_decoder = slot.get_decoder(b"second", second_key, FakeNvc, device_index=7)
+
+    assert reused_decoder is first_decoder
+    assert second_decoder is not first_decoder
+    assert events == [("create", b"first"), ("create", b"second")]
     assert slot.source_key is second_key
 
 

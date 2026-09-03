@@ -232,13 +232,12 @@ def validate_pynvvideocodec_hw_decoders(hw_decoders: object) -> int:
 class PyNvVideoCodecDecoderSlot:
     """A retained PyNv decoder slot and its CUDA stream.
 
-    The decoder is reused across requests: ``reconfigure_decoder`` repoints the
-    existing decoder at each new source instead of paying a fresh
-    ``SimpleDecoder`` construction per request. Construction (CUVID parser +
-    decoder + surface-pool allocation) is the dominant per-request cost, so
-    reconfiguring is far cheaper. A single decoder serves both metadata
-    (``len``/``get_stream_metadata``) and frame decode -- no separate
-    metadata decoder.
+    File-backed decoders are reused across requests: ``reconfigure_decoder``
+    repoints the existing decoder at each new path. PyNvVideoCodec does not
+    support reconfiguring a decoder with an in-memory source, so byte-backed
+    requests construct a new decoder while retaining the slot's CUDA stream.
+    A single decoder still serves both metadata (``len``/
+    ``get_stream_metadata``) and frame decode for each request.
     """
 
     def __init__(self, stream) -> None:
@@ -274,12 +273,17 @@ class PyNvVideoCodecDecoderSlot:
         if self.decoder is None:
             self._construct(source, source_key, nvc, device_index)
         elif self.source_key is not source_key:
-            try:
-                self.decoder.reconfigure_decoder(source)
-                self.source_key = source_key
-            except Exception:
-                # reconfigure unsupported/unsafe for this source -> rebuild.
+            if isinstance(source, bytes):
+                # PyNvVideoCodec accepts bytes at construction but documents
+                # reconfigure_decoder() as path-only.
                 self._construct(source, source_key, nvc, device_index)
+            else:
+                try:
+                    self.decoder.reconfigure_decoder(source)
+                    self.source_key = source_key
+                except Exception:
+                    # Reconfiguration can fail for an incompatible source.
+                    self._construct(source, source_key, nvc, device_index)
         return self.decoder
 
 
