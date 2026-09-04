@@ -15,6 +15,12 @@ phase_result() { if [ "$1" -eq 0 ]; then echo "PHASE OK: $2"; else echo "PHASE F
 
 log "host"; nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv || true; nproc; free -g | sed -n '1,2p'
 ls /usr/lib/x86_64-linux-gnu/libnvcuvid.so* 2>/dev/null || echo "WARN: libnvcuvid not visible; set NVIDIA_DRIVER_CAPABILITIES=compute,utility,video"
+# Upstream main is CUDA 13 only (torch 2.13.0+cu130). The node driver may be an
+# R570 (CUDA 12.8) driver, so use the CUDA forward-compatibility libraries that
+# ship in the nvidia/cuda:13.x image (requires NVIDIA_DISABLE_REQUIRE=1 on the job).
+if [ -e /usr/local/cuda/compat/libcuda.so.1 ]; then
+  export LD_LIBRARY_PATH="/usr/local/cuda/compat:${LD_LIBRARY_PATH:-}"; echo "CUDA forward-compat libs enabled: $(ls /usr/local/cuda/compat | tr '\n' ' ')"
+fi
 
 log "apt"; apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends git curl ca-certificates ffmpeg python3.12 python3.12-venv python3.12-dev build-essential >/dev/null
 python3.12 -m venv "$WORK/venv" && "$WORK/venv/bin/pip" install -q -U pip uv
@@ -23,22 +29,23 @@ PYBIN=$WORK/venv/bin/python; UV="$WORK/venv/bin/uv pip install --python $PYBIN -
 log "clone port branches"; git clone -q --depth 300 --branch "$BRANCH_TC" "$FORK" "$WORK/src-tc"; git clone -q --depth 300 --branch "$BRANCH_NV" "$FORK" "$WORK/src-nv"
 for d in src-tc src-nv; do git -C "$WORK/$d" remote add upstream https://github.com/vllm-project/vllm.git; git -C "$WORK/$d" fetch -q --depth 300 upstream main; echo "$d: $(git -C "$WORK/$d" log -1 --format='%h %s') (base $(git -C "$WORK/$d" merge-base HEAD upstream/main | cut -c1-9))"; done
 
-log "install vLLM nightly (brings the pinned torch)"; $UV --pre vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly 2>&1 | tail -3
-$PYBIN -c "import vllm, torch; print('vllm', vllm.__version__, '| torch', torch.__version__, '| cuda', torch.version.cuda)"
-$UV setuptools setuptools-scm wheel packaging jinja2 cmake ninja pytest psutil 2>&1 | tail -1
+log "install vLLM nightly (CUDA 13 build; torch pinned to cu130)"; $UV --pre vllm --torch-backend=cu130 --extra-index-url https://wheels.vllm.ai/nightly 2>&1 | tail -3
+if ! $PYBIN -c "import torch, vllm, vllm._C; assert torch.cuda.is_available(), 'torch.cuda unavailable'; print('vllm', vllm.__version__, '| torch', torch.__version__, '| cuda', torch.version.cuda, '| gpu', torch.cuda.get_device_name(0))"; then
+  echo "FATAL: vLLM/torch CUDA stack does not load on this node"; ldconfig -p | grep -E 'libcuda|libcudart' || true; nvidia-smi || true; exit 2
+fi
+$UV setuptools setuptools-scm setuptools_rust wheel packaging jinja2 cmake ninja pytest pytest-asyncio tblib psutil 2>&1 | tail -1
 
 # Editable install of a branch on top of the nightly compiled libs; fall back to
 # overlaying the changed Python files onto the installed package.
 install_branch() {
-  local src=$1
-  log "install branch $(git -C "$src" rev-parse --abbrev-ref HEAD) (precompiled editable)"
-  if ( cd "$src" && VLLM_USE_PRECOMPILED=1 $UV --no-build-isolation -e . 2>&1 | tail -4 ) && $PYBIN -c "import vllm,os;assert os.path.realpath(os.path.dirname(vllm.__file__)).startswith(os.path.realpath('$src')), vllm.__file__" ; then
+  local src=$1 base; base=$(git -C "$src" merge-base HEAD upstream/main)
+  log "install branch $(git -C "$src" rev-parse --abbrev-ref HEAD) (precompiled editable; compiled libs from base $base)"
+  if ( cd "$src" && VLLM_USE_PRECOMPILED=1 VLLM_PRECOMPILED_WHEEL_COMMIT=$base $UV --no-build-isolation -e . 2>&1 | tail -6 ) && $PYBIN -c "import vllm,os;assert os.path.realpath(os.path.dirname(vllm.__file__)).startswith(os.path.realpath('$src')), vllm.__file__" ; then
     echo "editable install OK -> $($PYBIN -c 'import vllm;print(vllm.__file__)')"; return 0
   fi
   echo "precompiled editable install failed; overlaying changed files onto the nightly package"
-  $UV --pre vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly 2>&1 | tail -1
+  $UV --pre vllm --torch-backend=cu130 --extra-index-url https://wheels.vllm.ai/nightly 2>&1 | tail -1
   local site; site=$($PYBIN -c "import vllm,os;print(os.path.dirname(vllm.__file__))")
-  local base; base=$(git -C "$src" merge-base HEAD upstream/main)
   for f in $(git -C "$src" diff --name-only "$base" HEAD -- 'vllm/*.py'); do cp -v "$src/$f" "$site/${f#vllm/}"; done
 }
 
@@ -74,7 +81,8 @@ K="torchcodec or backend_kwargs or device or lazy_imported or decoder_spec" run_
 K="" run_pytest tc-ipc "$WORK/src-tc" tests/multimodal/test_gpu_ipc_memory.py
 K="gpu_video_backend" run_pytest tc-config "$WORK/src-tc" tests/config/test_multimodal_config.py
 log "bench: opencv / torchcodec cpu / torchcodec cuda"
-$PYBIN "$BENCH_DIR/bench_video_decode.py" clips --out "$WORK/clips" | tee "$RES/clips.txt"
+ffmpeg -hide_banner -version | head -1
+$PYBIN "$BENCH_DIR/bench_video_decode.py" clips --out "$WORK/clips" 2>&1 | tee "$RES/clips.txt"; phase_result "${PIPESTATUS[0]}" "clips"
 for be in opencv torchcodec torchcodec-cuda; do $PYBIN "$BENCH_DIR/bench_video_decode.py" bench --backend "$be" --clips "$WORK/clips" --out "$RES/bench.jsonl" --label "tc-branch"; done
 $PYBIN "$BENCH_DIR/bench_video_decode.py" correctness --backend torchcodec-cuda --clips "$WORK/clips" --out "$RES/bench.jsonl"
 
@@ -91,6 +99,6 @@ for ver in 2.0.4 2.2.2; do
   $PYBIN "$BENCH_DIR/bench_video_decode.py" ab-check --clips "$WORK/clips" --out "$RES/bench.jsonl" --label "pynv-$ver"; phase_result $? "ab-check-$ver"
 done
 
-log "REPORT"; $PYBIN "$BENCH_DIR/bench_video_decode.py" report --in "$RES/bench.jsonl" | tee "$RES/report.md"
+log "REPORT"; if [ -s "$RES/bench.jsonl" ]; then $PYBIN "$BENCH_DIR/bench_video_decode.py" report --in "$RES/bench.jsonl" | tee "$RES/report.md"; else echo "no bench results recorded"; fi
 log "phase summary"; cat "$RES/phases.txt"; echo "FAILED PHASES: $FAILURES"
 exit $FAILURES
