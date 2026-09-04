@@ -17,7 +17,7 @@ CLIPS = {  # name: (size, fps, seconds, lavfi source)
     "1080p-10s": ("1920x1080", 30, 10, "testsrc2"),
     "2160p-10s": ("3840x2160", 30, 10, "testsrc2"),
     "1080p-60s": ("1920x1080", 30, 60, "testsrc2"),
-    "720p-ab-b": ("1280x720", 30, 5, "smptebars"),  # distinct clip for the A->B check
+    "720p-ab-b": ("1280x720", 30, 5, "testsrc"),  # distinct (moving) clip for the A->B check
 }
 FRAME_COUNTS = (8, 32)
 CONCURRENCY = (1, 8)
