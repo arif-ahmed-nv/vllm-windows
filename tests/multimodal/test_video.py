@@ -7,6 +7,7 @@ import sys
 import threading
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import numpy.typing as npt
@@ -37,6 +38,7 @@ from vllm.multimodal.video_decoders.pynvvideocodec import (
     PyNvVideoCodecDecoderSlot,
     PyNvVideoCodecVideoBackendMixin,
     _pynv_decoder_pool,
+    _pynvvideocodec_supports_in_memory_input,
 )
 from vllm.platforms import current_platform
 from vllm.transformers_utils.processor import get_video_processor_cls_name_from_config
@@ -264,7 +266,9 @@ def test_pynvvideocodec_backend_accounts_raw_decoded_frames(
             self.acquired.append(size)
             yield
 
-    def fake_decode(cls, file_path: str, frame_idx: list[int], nvc):
+    def fake_decode(
+        cls, source: str | bytes, source_key: object, frame_idx: list[int], nvc
+    ):
         return np.zeros((len(frame_idx), 20, 10, 3), dtype=np.uint8)
 
     pool = RecordingPool()
@@ -325,7 +329,9 @@ def test_pynvvideocodec_codec_uses_dynamic_sampling_strategy(
             self.acquired.append(size)
             yield
 
-    def fake_decode(cls, file_path: str, frame_idx: list[int], nvc):
+    def fake_decode(
+        cls, source: str | bytes, source_key: object, frame_idx: list[int], nvc
+    ):
         decoded_indices.append(frame_idx)
         return np.zeros((len(frame_idx), 20, 10, 3), dtype=np.uint8)
 
@@ -477,7 +483,7 @@ def test_pynvvideocodec_failed_rebuild_invalidates_decoder_slot():
     old_decoder = FakeDecoder()
     slot = PyNvVideoCodecDecoderSlot(FakeStream())
     slot.decoder = old_decoder
-    slot.source_path = "valid.mp4"
+    slot.source_key = object()
 
     class FakeNvc:
         class OutputColorType:
@@ -487,7 +493,7 @@ def test_pynvvideocodec_failed_rebuild_invalidates_decoder_slot():
         def SimpleDecoder(file_path: str, **kwargs):
             events.append(("construct", file_path))
             assert slot.decoder is None
-            assert slot.source_path is None
+            assert slot.source_key is None
             raise RuntimeError("construct failed")
 
     pool = _pynv_decoder_pool
@@ -508,6 +514,7 @@ def test_pynvvideocodec_failed_rebuild_invalidates_decoder_slot():
             assert borrowed is slot
             borrowed.get_decoder(
                 "unsupported-8k.mp4",
+                object(),
                 FakeNvc,
                 device_index=0,
             )
@@ -518,7 +525,7 @@ def test_pynvvideocodec_failed_rebuild_invalidates_decoder_slot():
         ]
         assert old_decoder.poisoned
         assert slot.decoder is None
-        assert slot.source_path is None
+        assert slot.source_key is None
         assert pool.slots == [slot]
     finally:
         pool.slots = old_slots
@@ -654,7 +661,7 @@ def test_pynvvideocodec_rejects_invalid_hw_decoders(hw_decoders: object):
         )
 
 
-def test_pynvvideocodec_decoder_slot_retains_simple_decoder():
+def test_pynvvideocodec_decoder_slot_reconfigures_file_source():
     events: list[tuple[object, ...]] = []
 
     class FakeStream:
@@ -683,9 +690,13 @@ def test_pynvvideocodec_decoder_slot_retains_simple_decoder():
 
     slot = PyNvVideoCodecDecoderSlot(FakeStream())
 
-    decoder = slot.get_decoder("first.mp4", FakeNvc, device_index=7)
-    assert slot.get_decoder("first.mp4", FakeNvc, device_index=7) is decoder
-    assert slot.get_decoder("second.mp4", FakeNvc, device_index=7) is decoder
+    first_key = object()
+    second_key = object()
+    decoder = slot.get_decoder("first.mp4", first_key, FakeNvc, device_index=7)
+    assert slot.get_decoder("first.mp4", first_key, FakeNvc, device_index=7) is decoder
+    assert (
+        slot.get_decoder("second.mp4", second_key, FakeNvc, device_index=7) is decoder
+    )
 
     assert events == [
         (
@@ -697,7 +708,145 @@ def test_pynvvideocodec_decoder_slot_retains_simple_decoder():
         ),
         ("reconfigure", "second.mp4"),
     ]
-    assert slot.source_path == "second.mp4"
+    assert slot.source_key is second_key
+
+
+def test_pynvvideocodec_decoder_slot_reconstructs_in_memory_source():
+    """Bytes must never reach the path-only ``reconfigure_decoder``."""
+    events: list[tuple[object, ...]] = []
+
+    class FakeStream:
+        cuda_stream = "cuda-stream"
+
+    class FakeDecoder:
+        def __init__(self, source: bytes, **kwargs):
+            events.append(("create", source))
+
+        def reconfigure_decoder(self, source: bytes):
+            raise AssertionError("bytes must not be passed to reconfigure_decoder")
+
+    class FakeNvc:
+        class OutputColorType:
+            RGB = "rgb"
+
+        SimpleDecoder = FakeDecoder
+
+    slot = PyNvVideoCodecDecoderSlot(FakeStream())
+
+    first_key = object()
+    second_key = object()
+    first = slot.get_decoder(b"first", first_key, FakeNvc, device_index=7)
+    assert slot.get_decoder(b"first", first_key, FakeNvc, device_index=7) is first
+    second = slot.get_decoder(b"second", second_key, FakeNvc, device_index=7)
+
+    assert second is not first
+    assert events == [("create", b"first"), ("create", b"second")]
+    assert slot.source_key is second_key
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        ("2.2.2", True),
+        ("2.2.10", True),
+        ("3.0.0", True),
+        ("2.2.1", False),
+        ("2.2", False),
+        ("2.0.4", False),
+        ("invalid-version", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_pynvvideocodec_in_memory_support_is_version_gated(
+    version: str | None, expected: bool
+):
+    nvc = SimpleNamespace() if version is None else SimpleNamespace(__version__=version)
+    assert _pynvvideocodec_supports_in_memory_input(nvc) is expected
+
+
+def _run_pynvvideocodec_request(monkeypatch: pytest.MonkeyPatch, fake_nvc: type):
+    """Drive ``decode_frames_pynvvideocodec`` with both GPU phases stubbed,
+    recording the ``(source, source_key)`` each phase received."""
+    observed: list[tuple[str | bytes, object]] = []
+
+    def fake_metadata(cls, source: str | bytes, source_key: object, nvc):
+        observed.append((source, source_key))
+        if isinstance(source, str):
+            assert Path(source).read_bytes() == b"request video"
+        return SimpleNamespace(
+            width=10,
+            height=20,
+            source=VideoSourceMetadata(
+                total_frames_num=4, original_fps=2.0, duration=2.0
+            ),
+        )
+
+    def fake_decode(
+        cls, source: str | bytes, source_key: object, frame_idx: list[int], nvc
+    ):
+        observed.append((source, source_key))
+        if isinstance(source, str):
+            assert Path(source).exists()
+        return np.zeros((len(frame_idx), 20, 10, 3), dtype=np.uint8)
+
+    monkeypatch.setitem(sys.modules, "PyNvVideoCodec", fake_nvc)
+    monkeypatch.setattr(
+        PyNvVideoCodecVideoBackendMixin,
+        "_read_source_metadata",
+        classmethod(fake_metadata),
+    )
+    monkeypatch.setattr(
+        PyNvVideoCodecVideoBackendMixin,
+        "_decode_to_pinned_host",
+        classmethod(fake_decode),
+    )
+    monkeypatch.setattr(
+        "vllm.multimodal.gpu_ipc_memory.get_mm_gpu_ipc_pool", lambda: None
+    )
+
+    with _fresh_decoder_pool():
+        frames, metadata = VideoBackend.load_bytes(
+            b"request video",
+            num_frames=2,
+            backend=PYNVVIDEOCODEC_VIDEO_BACKEND,
+            hw_decoders=1,
+        )
+
+    assert frames.shape == (2, 20, 10, 3)
+    assert metadata["video_backend"] == PYNVVIDEOCODEC_VIDEO_BACKEND
+    assert len(observed) == 2
+    # Both phases of one request share the same key so a retained slot is
+    # reused between them instead of being rebuilt.
+    assert observed[0][1] is observed[1][1]
+    return observed
+
+
+def test_pynvvideocodec_backend_passes_in_memory_bytes(monkeypatch: pytest.MonkeyPatch):
+    class FakeNvc:
+        __version__ = "2.2.2"
+
+    observed = _run_pynvvideocodec_request(monkeypatch, FakeNvc)
+
+    assert observed[0][0] == b"request video"
+    assert observed[1][0] == b"request video"
+
+
+@pytest.mark.parametrize("version", ["2.2.1", "2.0.4", "invalid-version"])
+def test_pynvvideocodec_backend_keeps_temp_file_for_older_versions(
+    monkeypatch: pytest.MonkeyPatch, version: str
+):
+    class FakeNvc:
+        __version__ = version
+
+    observed = _run_pynvvideocodec_request(monkeypatch, FakeNvc)
+
+    source = observed[0][0]
+    assert isinstance(source, str)
+    assert source.endswith(".mp4")
+    assert observed[1][0] == source
+    # The temporary file is removed once the request completes.
+    assert not Path(source).exists()
 
 
 # ============================================================================

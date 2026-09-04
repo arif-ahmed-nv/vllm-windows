@@ -885,6 +885,10 @@ vllm serve Qwen/Qwen3-VL-30B-A3B-Instruct \
 
 **PyNvVideoCodec-specific parameters:**
 
+With PyNvVideoCodec 2.2.2 and later, vLLM passes the encoded video bytes of each
+request directly to the decoder. Older versions, including the currently pinned
+`2.0.4`, keep using a temporary file per request.
+
 - `hw_decoders`: Maximum number of concurrent hardware decoder slots retained
   by each API server process. It must be a positive integer and defaults to `2`,
   which is the recommended starting point for concurrent video workloads.

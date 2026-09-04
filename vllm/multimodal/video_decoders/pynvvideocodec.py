@@ -66,6 +66,33 @@ def validate_pynvvideocodec_hw_decoders(hw_decoders: object) -> int:
     return hw_decoders
 
 
+# PyNvVideoCodec 2.2.2 added in-memory (``bytes``) input to ``SimpleDecoder``.
+PYNVVIDEOCODEC_MIN_IN_MEMORY_VERSION = (2, 2, 2)
+
+
+def _pynvvideocodec_supports_in_memory_input(nvc) -> bool:
+    """Return whether ``nvc.SimpleDecoder`` accepts the encoded bytes directly.
+
+    Unknown or unparseable versions keep the temporary-file path so an
+    unexpected wheel never receives an argument type it may not accept.
+    """
+    version = str(getattr(nvc, "__version__", "") or "")
+    parts: list[int] = []
+    for token in version.split("."):
+        digits = ""
+        for char in token:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            break
+        parts.append(int(digits))
+    if not parts:
+        return False
+    parts += [0] * (3 - len(parts))
+    return tuple(parts[:3]) >= PYNVVIDEOCODEC_MIN_IN_MEMORY_VERSION
+
+
 def _pynvvideocodec_exception_types(nvc) -> tuple[type[Exception], ...]:
     return tuple(
         exception_type
@@ -86,28 +113,42 @@ def _pynvvc_frames_to_nhwc(frames):
 class PyNvVideoCodecDecoderSlot:
     """A retained PyNv decoder slot and its CUDA stream.
 
-    The decoder is reused across requests: ``reconfigure_decoder`` repoints the
-    existing decoder at each new source instead of paying a fresh
+    File-backed decoders are reused across requests: ``reconfigure_decoder``
+    repoints the existing decoder at each new path instead of paying a fresh
     ``SimpleDecoder`` construction per request. Construction (CUVID parser +
     decoder + surface-pool allocation) is the dominant per-request cost, so
-    reconfiguring is far cheaper. A single decoder serves both metadata
+    reconfiguring is far cheaper.
+
+    PyNvVideoCodec documents ``reconfigure_decoder`` as path-only and requires
+    a new ``SimpleDecoder`` per in-memory clip, so byte-backed requests
+    construct a new decoder while keeping the slot's CUDA stream.
+
+    Within one request a single decoder serves both metadata
     (``len``/``get_stream_metadata``) and frame decode -- no separate
-    metadata decoder.
+    metadata decoder. The request is identified by a request-local
+    ``source_key`` token, so the (potentially large) payload is never hashed,
+    compared, or retained as a cache key.
     """
 
     def __init__(self, stream) -> None:
         self.stream = stream
         self.decoder = None
-        self.source_path: str | None = None
+        self.source_key: object | None = None
 
     def invalidate(self) -> None:
         self.decoder = None
-        self.source_path = None
+        self.source_key = None
 
-    def _construct(self, file_path: str, nvc, device_index: int) -> None:
+    def _construct(
+        self,
+        source: str | bytes,
+        source_key: object,
+        nvc,
+        device_index: int,
+    ) -> None:
         self.invalidate()
         decoder = nvc.SimpleDecoder(
-            file_path,
+            source,
             output_color_type=nvc.OutputColorType.RGB,
             use_device_memory=True,
             need_scanned_stream_metadata=True,
@@ -116,18 +157,29 @@ class PyNvVideoCodecDecoderSlot:
             decoder_cache_size=PYNVVIDEOCODEC_DECODER_CACHE_SIZE,
         )
         self.decoder = decoder
-        self.source_path = file_path
+        self.source_key = source_key
 
-    def get_decoder(self, file_path: str, nvc, device_index: int):
+    def get_decoder(
+        self,
+        source: str | bytes,
+        source_key: object,
+        nvc,
+        device_index: int,
+    ):
         if self.decoder is None:
-            self._construct(file_path, nvc, device_index)
-        elif self.source_path != file_path:
-            try:
-                self.decoder.reconfigure_decoder(file_path)
-                self.source_path = file_path
-            except Exception:
-                # reconfigure unsupported/unsafe for this source -> rebuild.
-                self._construct(file_path, nvc, device_index)
+            self._construct(source, source_key, nvc, device_index)
+        elif self.source_key is not source_key:
+            if isinstance(source, bytes):
+                # ``reconfigure_decoder`` is path-only; in-memory input needs
+                # a new decoder per clip.
+                self._construct(source, source_key, nvc, device_index)
+            else:
+                try:
+                    self.decoder.reconfigure_decoder(source)
+                    self.source_key = source_key
+                except Exception:
+                    # reconfigure unsupported/unsafe for this source -> rebuild.
+                    self._construct(source, source_key, nvc, device_index)
         return self.decoder
 
 
@@ -238,13 +290,14 @@ class PyNvVideoCodecVideoBackendMixin:
     @classmethod
     def _read_source_metadata(
         cls,
-        file_path: str,
+        source: str | bytes,
+        source_key: object,
         nvc,
     ) -> PyNvVideoCodecSourceMetadata:
         with cls._borrow_decoder_slot() as decoder_slot:
             with cls._torch_stream_context(decoder_slot.stream):
                 decoder = decoder_slot.get_decoder(
-                    file_path, nvc, device_index=cls._DEVICE_INDEX
+                    source, source_key, nvc, device_index=cls._DEVICE_INDEX
                 )
                 metadata = decoder.get_stream_metadata()
                 total_frames_num = len(decoder)
@@ -277,7 +330,8 @@ class PyNvVideoCodecVideoBackendMixin:
     @classmethod
     def _decode_to_pinned_host(
         cls,
-        file_path: str,
+        source: str | bytes,
+        source_key: object,
         frame_idx: list[int],
         nvc,
     ) -> npt.NDArray:
@@ -291,7 +345,7 @@ class PyNvVideoCodecVideoBackendMixin:
             with cls._torch_stream_context(stream):
                 try:
                     decoder = decoder_slot.get_decoder(
-                        file_path, nvc, device_index=cls._DEVICE_INDEX
+                        source, source_key, nvc, device_index=cls._DEVICE_INDEX
                     )
                     decoded_frames = decoder.get_batch_frames_by_index(frame_idx)
                 except Exception as exc:
@@ -341,13 +395,23 @@ class PyNvVideoCodecVideoBackendMixin:
 
         from vllm.multimodal.gpu_ipc_memory import get_mm_gpu_ipc_pool
 
-        temp_fd, temp_path = tempfile.mkstemp(suffix=".mp4")
+        # One token per request: the retained decoder serves both the metadata
+        # and frame-decode phases below, while any later request forces a
+        # reconfigure (file path) or rebuild (bytes) without keying on the
+        # payload itself.
+        source_key = object()
+        temp_path: str | None = None
         try:
-            with os.fdopen(temp_fd, "wb") as temp_file:
-                temp_file.write(data)
+            if _pynvvideocodec_supports_in_memory_input(nvc):
+                decode_source: str | bytes = data
+            else:
+                temp_fd, temp_path = tempfile.mkstemp(suffix=".mp4")
+                with os.fdopen(temp_fd, "wb") as temp_file:
+                    temp_file.write(data)
+                decode_source = temp_path
 
             try:
-                gpu_source = cls._read_source_metadata(temp_path, nvc)
+                gpu_source = cls._read_source_metadata(decode_source, source_key, nvc)
             except Exception as exc:
                 if not isinstance(exc, _pynvvideocodec_exception_types(nvc)):
                     raise
@@ -360,13 +424,18 @@ class PyNvVideoCodecVideoBackendMixin:
             raw_frame_bytes = len(frame_idx) * gpu_source.height * gpu_source.width * 3
             pool = get_mm_gpu_ipc_pool()
             if pool is None or raw_frame_bytes == 0:
-                frames = cls._decode_to_pinned_host(temp_path, frame_idx, nvc)
+                frames = cls._decode_to_pinned_host(
+                    decode_source, source_key, frame_idx, nvc
+                )
             else:
                 with pool.acquire(raw_frame_bytes):
-                    frames = cls._decode_to_pinned_host(temp_path, frame_idx, nvc)
+                    frames = cls._decode_to_pinned_host(
+                        decode_source, source_key, frame_idx, nvc
+                    )
         finally:
-            with suppress(FileNotFoundError):
-                os.unlink(temp_path)
+            if temp_path is not None:
+                with suppress(FileNotFoundError):
+                    os.unlink(temp_path)
 
         valid_frame_indices = frame_idx[: int(frames.shape[0])]
         return frames, source, frame_idx, valid_frame_indices
