@@ -37,7 +37,7 @@ fi
 if ! $PYBIN -c "import vllm; from vllm.platforms import current_platform; print('vllm', vllm.__version__, '| platform', current_platform.device_name, '| ops', __import__('vllm._custom_ops').__name__)"; then
   echo "FATAL: vLLM compiled extensions do not load"; ldconfig -p | grep -E 'libcuda|libcudart' || true; exit 2
 fi
-$UV setuptools setuptools-scm setuptools_rust wheel packaging jinja2 cmake ninja pytest pytest-asyncio tblib psutil 2>&1 | tail -1
+$UV setuptools setuptools-scm setuptools_rust wheel packaging jinja2 cmake ninja pytest pytest-asyncio tblib psutil av 2>&1 | tail -1
 
 # Editable install of a branch on top of the nightly compiled libs; fall back to
 # overlaying the changed Python files onto the installed package.
@@ -87,7 +87,7 @@ K="gpu_video_backend" run_pytest tc-config "$WORK/src-tc" tests/config/test_mult
 log "bench: opencv / torchcodec cpu / torchcodec cuda"
 ffmpeg -hide_banner -version | head -1
 $PYBIN "$BENCH_DIR/bench_video_decode.py" clips --out "$WORK/clips" 2>&1 | tee "$RES/clips.txt"; phase_result "${PIPESTATUS[0]}" "clips"
-for be in opencv torchcodec torchcodec-cuda; do $PYBIN "$BENCH_DIR/bench_video_decode.py" bench --backend "$be" --clips "$WORK/clips" --out "$RES/bench.jsonl" --label "tc-branch"; done
+if [ "${SKIP_BENCH:-0}" != "1" ]; then for be in opencv torchcodec torchcodec-cuda; do $PYBIN "$BENCH_DIR/bench_video_decode.py" bench --backend "$be" --clips "$WORK/clips" --out "$RES/bench.jsonl" --label "tc-branch"; done; fi
 $PYBIN "$BENCH_DIR/bench_video_decode.py" correctness --backend torchcodec-cuda --clips "$WORK/clips" --out "$RES/bench.jsonl"
 
 ############ PR 2: PyNvVideoCodec in-memory input ############
@@ -96,9 +96,9 @@ for ver in 2.0.4 2.2.2; do
   log "PyNvVideoCodec==$ver"; $UV "PyNvVideoCodec==$ver" 2>&1 | tail -1; $PYBIN -c "import PyNvVideoCodec as n; print('PyNvVideoCodec', getattr(n,'__version__','?'))"
   K="pynvvideocodec" run_pytest "nv-video-$ver" "$WORK/src-nv" tests/multimodal/test_video.py
   modes="default"; [ "$ver" = "2.2.2" ] && modes="default forced-tempfile forced-tempfile-shm"
-  for mode in $modes; do
+  if [ "${SKIP_BENCH:-0}" != "1" ]; then for mode in $modes; do
     $PYBIN "$BENCH_DIR/bench_video_decode.py" bench --backend pynvvideocodec --pynv-mode "$mode" --clips "$WORK/clips" --out "$RES/bench.jsonl" --label "pynv-$ver-$mode"
-  done
+  done; fi
   $PYBIN "$BENCH_DIR/bench_video_decode.py" correctness --backend pynvvideocodec --clips "$WORK/clips" --out "$RES/bench.jsonl" --label "pynv-$ver"
   $PYBIN "$BENCH_DIR/bench_video_decode.py" ab-check --clips "$WORK/clips" --out "$RES/bench.jsonl" --label "pynv-$ver"; phase_result $? "ab-check-$ver"
 done

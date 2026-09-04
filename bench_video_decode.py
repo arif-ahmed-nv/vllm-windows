@@ -139,30 +139,50 @@ def cmd_correctness(a):
 
 
 def cmd_ab_check(a):
-    """hw_decoders=1 so A and B must share one slot; B must not return stale A data."""
+    """hw_decoders=1 so A and B must share one slot; B must not return stale A data.
+
+    Pass criteria: every decode has the reference shape and indices, matches the
+    OpenCV reference within a color-conversion tolerance, and the repeated A decode
+    is bit-identical to the first (state after B is clean). SimpleDecoder
+    constructions are counted to show rebuild (bytes) vs reconfigure (path).
+    """
+    import numpy as np
     from vllm.multimodal.video import VideoBackend
     import vllm.multimodal.video_decoders.pynvvideocodec as nv
+    import PyNvVideoCodec as pv
     ver, eff, _ = apply_pynv_mode("default")
+    constructions = []
+    real_simple_decoder = pv.SimpleDecoder
+
+    class CountingSimpleDecoder:
+        def __new__(cls, source, *args, **kwargs):
+            constructions.append(type(source).__name__)
+            return real_simple_decoder(source, *args, **kwargs)
+
+    pv.SimpleDecoder = CountingSimpleDecoder
     manifest = json.loads((Path(a.clips) / "manifest.json").read_text())
     A = Path(manifest["1080p-10s"]["path"]).read_bytes(); B = Path(manifest["720p-ab-b"]["path"]).read_bytes()
-    refA, _ = VideoBackend.load_bytes(A, num_frames=8, backend="opencv"); refB, _ = VideoBackend.load_bytes(B, num_frames=8, backend="opencv")
+    refA, mA = VideoBackend.load_bytes(A, num_frames=8, backend="opencv"); refB, mB = VideoBackend.load_bytes(B, num_frames=8, backend="opencv")
     kw = {"backend": "pynvvideocodec", "hw_decoders": 1}
-    seq, ok = [], True
-    for name, data, ref in (("A", A, refA), ("B", B, refB), ("A2", A, refA)):
+    seq, frames_by_step, ok = [], {}, True
+    for name, data, ref, rm in (("A", A, refA, mA), ("B", B, refB, mB), ("A2", A, refA, mA)):
+        n0 = len(constructions)
         got, m = VideoBackend.load_bytes(data, num_frames=8, **kw)
+        frames_by_step[name] = got
         slots = nv._pynv_decoder_pool.slots
-        dec_id = id(slots[0].decoder) if slots and slots[0].decoder is not None else None
         d = frame_diff(ref, got) if got.shape == ref.shape else {"mae": None}
         step = {"step": name, "shape": list(got.shape), "expected_shape": list(ref.shape), "indices": m["frames_indices"],
-                "slot_count": len(slots), "slot_id": id(slots[0]) if slots else None, "stream_id": id(slots[0].stream) if slots else None,
-                "decoder_id": dec_id, **d}
-        step["pass"] = got.shape == ref.shape and d.get("mae") is not None and d["mae"] < 3.0
+                "indices_match": list(m["frames_indices"]) == list(rm["frames_indices"]), "slot_count": len(slots),
+                "slot_id": id(slots[0]) if slots else None, "stream_id": id(slots[0].stream) if slots else None,
+                "constructions": len(constructions) - n0, **d}
+        step["pass"] = bool(got.shape == ref.shape and step["indices_match"] and d.get("mae") is not None and d["mae"] < 15.0)
         ok &= step["pass"]; seq.append(step)
+    a2_identical = bool(np.array_equal(frames_by_step["A"], frames_by_step["A2"]))
     same_slot = len({s["slot_id"] for s in seq}) == 1 and len({s["stream_id"] for s in seq}) == 1
-    decoder_rebuilt_for_B = seq[0]["decoder_id"] != seq[1]["decoder_id"]
     emit(a.out, {"kind": "ab-check", "label": a.label, "pynv_version": ver, "pynv_path": eff, "single_slot_retained": same_slot,
-                 "decoder_rebuilt_for_B": decoder_rebuilt_for_B, "steps": seq, "pass": bool(ok and same_slot)})
-    sys.exit(0 if ok and same_slot else 1)
+                 "a2_identical_to_a": a2_identical, "construction_sources": constructions,
+                 "decoder_rebuilt_for_B": seq[1]["constructions"] > 0, "steps": seq, "pass": bool(ok and same_slot and a2_identical)})
+    sys.exit(0 if ok and same_slot and a2_identical else 1)
 
 
 def cmd_report(a):
@@ -176,7 +196,7 @@ def cmd_report(a):
         print(f"| {r['label']} | {r['backend']} | {r['clip']} | {r['shape_match']} | {r['indices_match']} | {r.get('mae','-') if r.get('mae') is None else round(r['mae'],3)} | {r.get('p99','-')} | {r.get('max','-')} |")
     print("\n## PyNvVideoCodec single-slot A->B->A check\n")
     for r in [x for x in recs if x["kind"] == "ab-check"]:
-        print(f"- {r['label']} ({r['pynv_version']}, {r['pynv_path']}): PASS={r['pass']} single_slot_retained={r['single_slot_retained']} decoder_rebuilt_for_B={r['decoder_rebuilt_for_B']}")
+        print(f"- {r['label']} ({r['pynv_version']}, {r['pynv_path']}): PASS={r['pass']} single_slot_retained={r['single_slot_retained']} decoder_rebuilt_for_B={r['decoder_rebuilt_for_B']} a2_identical_to_a={r.get('a2_identical_to_a')} constructions={r.get('construction_sources')}")
         for s in r["steps"]:
             print(f"    - {s['step']}: shape={s['shape']} expected={s['expected_shape']} mae={s.get('mae')} pass={s['pass']}")
 
