@@ -29,9 +29,13 @@ PYBIN=$WORK/venv/bin/python; UV="$WORK/venv/bin/uv pip install --python $PYBIN -
 log "clone port branches"; git clone -q --depth 300 --branch "$BRANCH_TC" "$FORK" "$WORK/src-tc"; git clone -q --depth 300 --branch "$BRANCH_NV" "$FORK" "$WORK/src-nv"
 for d in src-tc src-nv; do git -C "$WORK/$d" remote add upstream https://github.com/vllm-project/vllm.git; git -C "$WORK/$d" fetch -q --depth 300 upstream main; echo "$d: $(git -C "$WORK/$d" log -1 --format='%h %s') (base $(git -C "$WORK/$d" merge-base HEAD upstream/main | cut -c1-9))"; done
 
-log "install vLLM nightly (CUDA 13 build; torch pinned to cu130)"; $UV --pre vllm --torch-backend=cu130 --extra-index-url https://wheels.vllm.ai/nightly 2>&1 | tail -3
-if ! $PYBIN -c "import torch, vllm, vllm._C; assert torch.cuda.is_available(), 'torch.cuda unavailable'; print('vllm', vllm.__version__, '| torch', torch.__version__, '| cuda', torch.version.cuda, '| gpu', torch.cuda.get_device_name(0))"; then
-  echo "FATAL: vLLM/torch CUDA stack does not load on this node"; ldconfig -p | grep -E 'libcuda|libcudart' || true; nvidia-smi || true; exit 2
+log "install vLLM nightly (CUDA 13 build; torch pinned to cu130)"; $UV --pre vllm --torch-backend=cu130 --extra-index-url https://wheels.vllm.ai/nightly 2>&1 | tail -15
+$PYBIN -m pip show vllm torch 2>/dev/null | grep -E '^(Name|Version|Location)'; ls "$($PYBIN -c 'import vllm,os;print(os.path.dirname(vllm.__file__))')" | grep -E '^_C|\.so$' || echo "(no compiled extension files listed)"
+if ! $PYBIN -c "import torch; assert torch.cuda.is_available(), 'torch.cuda.is_available() is False'; print('torch', torch.__version__, '| cuda', torch.version.cuda, '| gpu', torch.cuda.get_device_name(0), '| driver-visible CUDA', torch.cuda.driver_allocated_memory() if hasattr(torch.cuda,'driver_allocated_memory') else '')"; then
+  echo "FATAL: torch cannot use the GPU (forward-compat libcuda not in effect?)"; ldconfig -p | grep -E 'libcuda|libcudart' || true; echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"; exit 2
+fi
+if ! $PYBIN -c "import vllm; from vllm.platforms import current_platform; print('vllm', vllm.__version__, '| platform', current_platform.device_name, '| ops', __import__('vllm._custom_ops').__name__)"; then
+  echo "FATAL: vLLM compiled extensions do not load"; ldconfig -p | grep -E 'libcuda|libcudart' || true; exit 2
 fi
 $UV setuptools setuptools-scm setuptools_rust wheel packaging jinja2 cmake ninja pytest pytest-asyncio tblib psutil 2>&1 | tail -1
 
