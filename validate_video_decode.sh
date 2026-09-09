@@ -11,8 +11,8 @@ BRANCH_NV=${BRANCH_NV:-feat/pynvvideocodec-in-memory}
 BENCH_DIR=${BENCH_DIR:-$WORK/bench}
 # CPU_LIMITS: space-separated list of API-server core counts to benchmark under (0 = unconstrained).
 # Each non-zero entry pins the bench process to that many of the allowed CPUs with taskset.
-CPU_LIMITS=${CPU_LIMITS:-0}
-BENCH_BACKENDS=${BENCH_BACKENDS:-opencv torchcodec torchcodec-cuda}
+CPU_LIMITS=${CPU_LIMITS:-0}; CPU_LIMITS=${CPU_LIMITS//,/ }
+BENCH_BACKENDS=${BENCH_BACKENDS:-opencv torchcodec torchcodec-cuda}; BENCH_BACKENDS=${BENCH_BACKENDS//,/ }
 SKIP_TESTS=${SKIP_TESTS:-0}; SKIP_NV=${SKIP_NV:-0}; SKIP_BENCH=${SKIP_BENCH:-0}
 FAILURES=0
 log() { echo; echo "===== [$(date -u +%H:%M:%S)] $*"; }
