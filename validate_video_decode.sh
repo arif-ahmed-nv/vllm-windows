@@ -16,10 +16,11 @@ BENCH_BACKENDS=${BENCH_BACKENDS:-opencv torchcodec torchcodec-cuda}; BENCH_BACKE
 SKIP_TESTS=${SKIP_TESTS:-0}; SKIP_NV=${SKIP_NV:-0}; SKIP_BENCH=${SKIP_BENCH:-0}
 FAILURES=0
 log() { echo; echo "===== [$(date -u +%H:%M:%S)] $*"; }
-cpuset_for() { python3 -c "import os,sys;c=sorted(os.sched_getaffinity(0));n=int(sys.argv[1]);print(','.join(map(str,c[:n])))" "$1"; }
+# The CUDA base image has no python3 on PATH; use the venv interpreter (exists by bench time).
+cpuset_for() { "$PYBIN" -c "import os,sys;c=sorted(os.sched_getaffinity(0));n=int(sys.argv[1]);print(','.join(map(str,c[:n])))" "$1"; }
 phase_result() { if [ "$1" -eq 0 ]; then echo "PHASE OK: $2"; else echo "PHASE FAILED($1): $2"; FAILURES=$((FAILURES+1)); fi; echo "$2 rc=$1" >> "$RES/phases.txt"; }
 
-log "host"; nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv || true; echo "nproc=$(nproc) affinity=$(python3 -c 'import os;print(len(os.sched_getaffinity(0)))')"; lscpu | grep -E 'Model name|^CPU\(s\)' || true; free -g | sed -n '1,2p'
+log "host"; nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv || true; echo "nproc=$(nproc) cgroup_cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo n/a)"; lscpu | grep -E 'Model name|^CPU\(s\)' || true; free -g | sed -n '1,2p'
 ls /usr/lib/x86_64-linux-gnu/libnvcuvid.so* 2>/dev/null || echo "WARN: libnvcuvid not visible; set NVIDIA_DRIVER_CAPABILITIES=compute,utility,video"
 # Upstream main is CUDA 13 only (torch 2.13.0+cu130). The node driver may be an
 # R570 (CUDA 12.8) driver, so use the CUDA forward-compatibility libraries that
