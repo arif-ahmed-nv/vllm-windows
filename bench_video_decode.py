@@ -19,9 +19,11 @@ CLIPS = {  # name: (size, fps, seconds, lavfi source)
     "1080p-60s": ("1920x1080", 30, 60, "testsrc2"),
     "720p-ab-b": ("1280x720", 30, 5, "testsrc"),  # distinct (moving) clip for the A->B check
 }
-FRAME_COUNTS = (8, 32)
-CONCURRENCY = (1, 8)
-ROUNDS = 5
+_env_ints = lambda k, d: tuple(int(x) for x in os.environ.get(k, d).split(",") if x)
+FRAME_COUNTS = _env_ints("BENCH_FRAMES", "8,32")
+CONCURRENCY = _env_ints("BENCH_CONCURRENCY", "1,8")
+ROUNDS = int(os.environ.get("BENCH_ROUNDS", "5"))
+BENCH_CLIPS = tuple(x for x in os.environ.get("BENCH_CLIPS", "1080p-10s,2160p-10s,1080p-60s").split(",") if x)
 
 
 def emit(out, rec):
@@ -90,7 +92,8 @@ def cmd_bench(a):
         ver, eff, tmp = apply_pynv_mode(a.pynv_mode); extra = {"pynv_version": ver, "pynv_path": eff, "tmpdir": tmp, "pynv_mode": a.pynv_mode}
     manifest = json.loads((Path(a.clips) / "manifest.json").read_text())
     proc = psutil.Process(); pid = os.getpid()
-    for clip in ("1080p-10s", "2160p-10s", "1080p-60s"):
+    ncpu = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+    for clip in BENCH_CLIPS:
         data = Path(manifest[clip]["path"]).read_bytes()
         for nf in FRAME_COUNTS:
             VideoBackend.load_bytes(data, num_frames=nf, **kw)  # warm-up (decoder/context init)
@@ -112,7 +115,7 @@ def cmd_bench(a):
                              "concurrency": conc, "rounds": ROUNDS, "lat_ms_p50": statistics.median(lat) * 1e3,
                              "lat_ms_p95": sorted(lat)[max(0, int(len(lat) * 0.95) - 1)] * 1e3,
                              "req_per_s": (ROUNDS * conc) / t_all, "frames_per_s": (ROUNDS * conc * nf) / t_all,
-                             "cpu_cores_avg": cpu_s / t_all, "gpu_mem_mib_proc": gpu_mem_mib_for_pid(pid), **extra})
+                             "cpu_cores_avg": cpu_s / t_all, "cpu_allowed": ncpu, "gpu_mem_mib_proc": gpu_mem_mib_for_pid(pid), **extra})
 
 
 def frame_diff(ref, test):
@@ -188,9 +191,9 @@ def cmd_ab_check(a):
 def cmd_report(a):
     recs = [json.loads(l) for l in open(a.inp) if l.strip()]
     print("## Bench (median latency ms | p95 | frames/s | avg CPU cores | proc GPU MiB)\n")
-    print("| label | backend | path | clip | frames | conc | p50 ms | p95 ms | frames/s | cpu cores | GPU MiB |\n|---|---|---|---|---|---|---|---|---|---|---|")
+    print("| label | backend | path | clip | frames | conc | p50 ms | p95 ms | frames/s | cpu cores | cpus allowed | GPU MiB |\n|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in [x for x in recs if x["kind"] == "bench"]:
-        print(f"| {r['label']} | {r['backend']} | {r.get('pynv_path','-')} | {r['clip']} | {r['num_frames']} | {r['concurrency']} | {r['lat_ms_p50']:.0f} | {r['lat_ms_p95']:.0f} | {r['frames_per_s']:.1f} | {r['cpu_cores_avg']:.2f} | {r.get('gpu_mem_mib_proc') or '-'} |")
+        print(f"| {r['label']} | {r['backend']} | {r.get('pynv_path','-')} | {r['clip']} | {r['num_frames']} | {r['concurrency']} | {r['lat_ms_p50']:.0f} | {r['lat_ms_p95']:.0f} | {r['frames_per_s']:.1f} | {r['cpu_cores_avg']:.2f} | {r.get('cpu_allowed','-')} | {r.get('gpu_mem_mib_proc') or '-'} |")
     print("\n## Correctness vs OpenCV (8 sampled frames)\n\n| label | backend | clip | shape | indices | MAE | p99 | max |\n|---|---|---|---|---|---|---|---|")
     for r in [x for x in recs if x["kind"] == "correctness"]:
         print(f"| {r['label']} | {r['backend']} | {r['clip']} | {r['shape_match']} | {r['indices_match']} | {r.get('mae','-') if r.get('mae') is None else round(r['mae'],3)} | {r.get('p99','-')} | {r.get('max','-')} |")

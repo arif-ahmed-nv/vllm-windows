@@ -9,11 +9,17 @@ FORK=${FORK:-https://github.com/arif-ahmed-nv/vllm-windows.git}
 BRANCH_TC=${BRANCH_TC:-feat/torchcodec-cuda-device}
 BRANCH_NV=${BRANCH_NV:-feat/pynvvideocodec-in-memory}
 BENCH_DIR=${BENCH_DIR:-$WORK/bench}
+# CPU_LIMITS: space-separated list of API-server core counts to benchmark under (0 = unconstrained).
+# Each non-zero entry pins the bench process to that many of the allowed CPUs with taskset.
+CPU_LIMITS=${CPU_LIMITS:-0}
+BENCH_BACKENDS=${BENCH_BACKENDS:-opencv torchcodec torchcodec-cuda}
+SKIP_TESTS=${SKIP_TESTS:-0}; SKIP_NV=${SKIP_NV:-0}; SKIP_BENCH=${SKIP_BENCH:-0}
 FAILURES=0
 log() { echo; echo "===== [$(date -u +%H:%M:%S)] $*"; }
+cpuset_for() { python3 -c "import os,sys;c=sorted(os.sched_getaffinity(0));n=int(sys.argv[1]);print(','.join(map(str,c[:n])))" "$1"; }
 phase_result() { if [ "$1" -eq 0 ]; then echo "PHASE OK: $2"; else echo "PHASE FAILED($1): $2"; FAILURES=$((FAILURES+1)); fi; echo "$2 rc=$1" >> "$RES/phases.txt"; }
 
-log "host"; nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv || true; nproc; free -g | sed -n '1,2p'
+log "host"; nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv || true; echo "nproc=$(nproc) affinity=$(python3 -c 'import os;print(len(os.sched_getaffinity(0)))')"; lscpu | grep -E 'Model name|^CPU\(s\)' || true; free -g | sed -n '1,2p'
 ls /usr/lib/x86_64-linux-gnu/libnvcuvid.so* 2>/dev/null || echo "WARN: libnvcuvid not visible; set NVIDIA_DRIVER_CAPABILITIES=compute,utility,video"
 # Upstream main is CUDA 13 only (torch 2.13.0+cu130). The node driver may be an
 # R570 (CUDA 12.8) driver, so use the CUDA forward-compatibility libraries that
@@ -22,7 +28,7 @@ if [ -e /usr/local/cuda/compat/libcuda.so.1 ]; then
   export LD_LIBRARY_PATH="/usr/local/cuda/compat:${LD_LIBRARY_PATH:-}"; echo "CUDA forward-compat libs enabled: $(ls /usr/local/cuda/compat | tr '\n' ' ')"
 fi
 
-log "apt"; apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends git curl ca-certificates ffmpeg python3.12 python3.12-venv python3.12-dev build-essential >/dev/null
+log "apt"; apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends git curl ca-certificates util-linux ffmpeg python3.12 python3.12-venv python3.12-dev build-essential >/dev/null
 python3.12 -m venv "$WORK/venv" && "$WORK/venv/bin/pip" install -q -U pip uv
 PYBIN=$WORK/venv/bin/python; UV="$WORK/venv/bin/uv pip install --python $PYBIN -q"
 
@@ -81,27 +87,36 @@ PY
 
 ############ PR 1: TorchCodec device selection ############
 install_branch "$WORK/src-tc"
-K="torchcodec or backend_kwargs or device or lazy_imported or decoder_spec" run_pytest tc-video "$WORK/src-tc" tests/multimodal/test_video.py
-K="" run_pytest tc-ipc "$WORK/src-tc" tests/multimodal/test_gpu_ipc_memory.py
-K="gpu_video_backend" run_pytest tc-config "$WORK/src-tc" tests/config/test_multimodal_config.py
+if [ "$SKIP_TESTS" != "1" ]; then
+  K="torchcodec or backend_kwargs or device or lazy_imported or decoder_spec" run_pytest tc-video "$WORK/src-tc" tests/multimodal/test_video.py
+  K="" run_pytest tc-ipc "$WORK/src-tc" tests/multimodal/test_gpu_ipc_memory.py
+  K="gpu_video_backend" run_pytest tc-config "$WORK/src-tc" tests/config/test_multimodal_config.py
+fi
 log "bench: opencv / torchcodec cpu / torchcodec cuda"
 ffmpeg -hide_banner -version | head -1
 $PYBIN "$BENCH_DIR/bench_video_decode.py" clips --out "$WORK/clips" 2>&1 | tee "$RES/clips.txt"; phase_result "${PIPESTATUS[0]}" "clips"
-if [ "${SKIP_BENCH:-0}" != "1" ]; then for be in opencv torchcodec torchcodec-cuda; do $PYBIN "$BENCH_DIR/bench_video_decode.py" bench --backend "$be" --clips "$WORK/clips" --out "$RES/bench.jsonl" --label "tc-branch"; done; fi
+if [ "$SKIP_BENCH" != "1" ]; then for lim in $CPU_LIMITS; do
+  WRAP=""; label="tc-branch"
+  if [ "$lim" != "0" ]; then WRAP="taskset -c $(cpuset_for "$lim")"; label="tc-branch-cpu$lim"; fi
+  log "bench PR1 backends [$BENCH_BACKENDS] cpu_limit=$lim ${WRAP:+($WRAP)}"
+  for be in $BENCH_BACKENDS; do $WRAP $PYBIN "$BENCH_DIR/bench_video_decode.py" bench --backend "$be" --clips "$WORK/clips" --out "$RES/bench.jsonl" --label "$label"; done
+done; fi
 $PYBIN "$BENCH_DIR/bench_video_decode.py" correctness --backend torchcodec-cuda --clips "$WORK/clips" --out "$RES/bench.jsonl"
 
 ############ PR 2: PyNvVideoCodec in-memory input ############
+if [ "$SKIP_NV" != "1" ]; then
 install_branch "$WORK/src-nv"
 for ver in 2.0.4 2.2.2; do
   log "PyNvVideoCodec==$ver"; $UV "PyNvVideoCodec==$ver" 2>&1 | tail -1; $PYBIN -c "import PyNvVideoCodec as n; print('PyNvVideoCodec', getattr(n,'__version__','?'))"
   K="pynvvideocodec" run_pytest "nv-video-$ver" "$WORK/src-nv" tests/multimodal/test_video.py
   modes="default"; [ "$ver" = "2.2.2" ] && modes="default forced-tempfile forced-tempfile-shm"
-  if [ "${SKIP_BENCH:-0}" != "1" ]; then for mode in $modes; do
+  if [ "$SKIP_BENCH" != "1" ]; then for mode in $modes; do
     $PYBIN "$BENCH_DIR/bench_video_decode.py" bench --backend pynvvideocodec --pynv-mode "$mode" --clips "$WORK/clips" --out "$RES/bench.jsonl" --label "pynv-$ver-$mode"
   done; fi
   $PYBIN "$BENCH_DIR/bench_video_decode.py" correctness --backend pynvvideocodec --clips "$WORK/clips" --out "$RES/bench.jsonl" --label "pynv-$ver"
   $PYBIN "$BENCH_DIR/bench_video_decode.py" ab-check --clips "$WORK/clips" --out "$RES/bench.jsonl" --label "pynv-$ver"; phase_result $? "ab-check-$ver"
 done
+fi
 
 log "REPORT"; if [ -s "$RES/bench.jsonl" ]; then $PYBIN "$BENCH_DIR/bench_video_decode.py" report --in "$RES/bench.jsonl" | tee "$RES/report.md"; else echo "no bench results recorded"; fi
 log "phase summary"; cat "$RES/phases.txt"; echo "FAILED PHASES: $FAILURES"
