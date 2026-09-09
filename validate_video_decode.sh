@@ -54,10 +54,15 @@ install_branch() {
   if ( cd "$src" && VLLM_USE_PRECOMPILED=1 VLLM_PRECOMPILED_WHEEL_COMMIT=$base $UV --no-build-isolation -e . 2>&1 | tail -6 ) && $PYBIN -c "import vllm,os;assert os.path.realpath(os.path.dirname(vllm.__file__)).startswith(os.path.realpath('$src')), vllm.__file__" ; then
     echo "editable install OK -> $($PYBIN -c 'import vllm;print(vllm.__file__)')"; return 0
   fi
-  echo "precompiled editable install failed; overlaying changed files onto the nightly package"
-  $UV --pre vllm --torch-backend=cu130 --extra-index-url https://wheels.vllm.ai/nightly 2>&1 | tail -1
-  local site; site=$($PYBIN -c "import vllm,os;print(os.path.dirname(vllm.__file__))")
-  for f in $(git -C "$src" diff --name-only "$base" HEAD -- 'vllm/*.py'); do cp -v "$src/$f" "$site/${f#vllm/}"; done
+  echo "precompiled editable install failed; installing the branch as a Python-only editable package on top of the nightly compiled libs"
+  # Keep the nightly's compiled artifacts (they vanish when the editable install replaces the dist),
+  # build the branch with VLLM_TARGET_DEVICE=empty (pure Python), then drop the artifacts into the source tree.
+  local site libs; site=$($PYBIN -c "import vllm,os;print(os.path.dirname(vllm.__file__))") || { $UV --pre vllm --torch-backend=cu130 --extra-index-url https://wheels.vllm.ai/nightly 2>&1 | tail -1; site=$($PYBIN -c "import vllm,os;print(os.path.dirname(vllm.__file__))"); }
+  libs=$WORK/nightly-libs; rm -rf "$libs"; mkdir -p "$libs"; cp "$site"/*.so "$libs"/ 2>/dev/null; [ -d "$site/vllm_flash_attn" ] && cp -r "$site/vllm_flash_attn" "$libs"/
+  echo "saved nightly artifacts: $(ls "$libs" | tr '\n' ' ')"
+  ( cd "$src" && VLLM_TARGET_DEVICE=empty $UV --no-build-isolation --no-deps -e . 2>&1 | tail -3 )
+  cp "$libs"/*.so "$src/vllm/" 2>/dev/null; [ -d "$libs/vllm_flash_attn" ] && cp -r "$libs/vllm_flash_attn/." "$src/vllm/vllm_flash_attn/"
+  $PYBIN -c "import vllm,os;assert os.path.realpath(os.path.dirname(vllm.__file__)).startswith(os.path.realpath('$src')), vllm.__file__; from vllm.platforms import current_platform; print('python-only editable + nightly libs OK ->', vllm.__file__, '| platform', current_platform.device_name)" || { echo "FATAL: fallback install failed"; return 1; }
 }
 
 run_pytest() { # label, src, files..., -k expr via K env
